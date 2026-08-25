@@ -131,8 +131,12 @@ function json(res, status, body, headers = {}) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...headers });
   res.end(JSON.stringify(body));
 }
-function cors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
+function cors(req, res) {
+  const origin = req.headers.origin;
+  if (origin === "http://localhost:3000" || origin === "http://127.0.0.1:3000") {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
@@ -186,7 +190,7 @@ function safeAttachmentName(name) {
 }
 
 const server = http.createServer(async (req, res) => {
-  cors(res);
+  cors(req, res);
   if (req.method === "OPTIONS") return res.end();
   const url = new URL(req.url || "/", `http://${req.headers.host}`);
   const pathname = url.pathname;

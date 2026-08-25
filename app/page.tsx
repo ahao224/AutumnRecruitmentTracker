@@ -121,7 +121,7 @@ export default function Home() {
           <div className="header-actions"><button className="theme-toggle" onClick={toggleTheme} aria-label={`切换到${theme === "dark" ? "浅色" : "深色"}模式`}><span className={theme === "light" ? "active" : ""}>☀</span><span className={theme === "dark" ? "active" : ""}>☾</span><b>{theme === "dark" ? "深色" : "浅色"}</b></button><button className="secondary compact" onClick={() => newSession()}>＋ 招聘流程</button><button className="primary" onClick={() => setAppEditor("new")}>＋ 新增投递</button></div>
         </header>
 
-        {error && <div className="alert"><b>暂时无法读取本地数据</b><span>{error}。请通过“启动秋招手账.bat”运行工具。</span><button onClick={load}>重新连接</button></div>}
+        {error && <div className="alert"><b>暂时无法读取本地数据</b><span>{error}。请关闭当前页面，然后从桌面重新打开“秋招手账”。</span><button onClick={load}>重新连接</button></div>}
         {loading ? <div className="loading">正在打开你的秋招手账…</div> : <>
           {view === "overview" && <Overview applications={applications} sessions={sessions} upcoming={upcoming} onAddApp={() => setAppEditor("new")} onAddSession={newSession} onAddSchedule={() => setScheduleEditor("new")} onOpenSession={openSession} onOpenSchedule={setScheduleEditor} onView={setView} />}
           {view === "applications" && <ApplicationsView applications={filteredApps} sessions={sessions} search={search} setSearch={setSearch} filter={statusFilter} setFilter={setStatusFilter} onEdit={setAppEditor} onDelete={deleteApplication} onStatus={updateStatus} onSession={newSession} onOpenSession={openSession} onDeleteSession={deleteSessionFromList} />}
@@ -142,10 +142,21 @@ export default function Home() {
 }
 
 function Overview({ applications, sessions, upcoming, onAddApp, onAddSession, onAddSchedule, onOpenSession, onOpenSchedule, onView }: any) {
-  const cards = ["准备投递", "已投递", "笔试", "面试", "Offer"].map((label) => ({ label, count: applications.filter((a: Application) => a.status === label).length }));
+  const examSessions = sessions.filter((s: Session) => s.type === "笔试");
+  const interviewSessions = sessions.filter((s: Session) => s.type === "面试");
+  const submittedCount = applications.filter((a: Application) => ["已投递", "笔试", "面试", "Offer", "拒绝"].includes(a.status)).length;
+  const examCount = examSessions.length + applications.filter((a: Application) => a.status === "笔试" && !examSessions.some((s: Session) => s.application_id === a.id)).length;
+  const interviewCount = interviewSessions.length + applications.filter((a: Application) => a.status === "面试" && !interviewSessions.some((s: Session) => s.application_id === a.id)).length;
+  const cards = [
+    { label: "准备投递", count: applications.filter((a: Application) => a.status === "准备投递").length, caption: "当前待投岗位", target: "applications" },
+    { label: "已投递", count: submittedCount, caption: "累计投递岗位", target: "applications" },
+    { label: "笔试", count: examCount, caption: `累计场次 · 当前 ${applications.filter((a: Application) => a.status === "笔试").length} 个岗位`, target: "sessions" },
+    { label: "面试", count: interviewCount, caption: `累计场次 · 当前 ${applications.filter((a: Application) => a.status === "面试").length} 个岗位`, target: "sessions" },
+    { label: "Offer", count: applications.filter((a: Application) => a.status === "Offer").length, caption: "当前获得 Offer", target: "applications" },
+  ];
   const recent = applications.slice(0, 5);
   return <>
-    <section className="stage-grid">{cards.map((item, i) => <button className={`stat tone-${i}`} key={item.label} onClick={() => onView("applications")}><p>{item.label}</p><strong>{item.count}</strong><span>{item.label === "Offer" ? "继续加油" : "查看记录 →"}</span></button>)}</section>
+    <section className="stage-grid">{cards.map((item, i) => <button className={`stat tone-${i}`} key={item.label} onClick={() => onView(item.target)}><p>{item.label}</p><strong>{item.count}</strong><span>{item.caption} →</span></button>)}</section>
     <section className="dashboard-grid">
       <article className="panel applications"><div className="panel-title"><div><p className="eyebrow">正在进行</p><h2>最近投递</h2></div><button className="text-button" onClick={() => onView("applications")}>查看全部 →</button></div>
         {recent.length ? <div className="application-list">{recent.map((a: Application) => <div className="application" key={a.id}><div className="company-mark">{a.company[0]}</div><div className="grow"><b>{a.company}</b><span>{a.role}{a.location ? ` · ${a.location}` : ""}</span></div><span className={`status-chip s-${statuses.indexOf(a.status)}`}>{a.status}</span><button className="mini-action" onClick={() => onAddSession(a.id)}>记一场</button></div>)}</div> : <Empty title="还没有投递记录" text="从第一家公司开始，建立你的秋招进度。" action="新增第一条投递" onClick={onAddApp} />}
@@ -168,13 +179,13 @@ function ApplicationsView({ applications, sessions, search, setSearch, filter, s
   }
   return <section className="workspace-panel">
     <div className="toolbar"><label className="search">⌕<input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索公司、岗位或城市" /></label><select value={filter} onChange={(e) => setFilter(e.target.value)}><option>全部</option>{statuses.map((s) => <option key={s}>{s}</option>)}</select><span>{applications.length} 条记录</span></div>
-    {applications.length ? <div className="table-wrap"><table className="process-table"><thead><tr><th>公司 / 岗位</th><th>当前进度</th><th>下一安排</th><th>投递状态</th><th>优先级</th><th className="actions-column">操作</th></tr></thead><tbody>
+    {applications.length ? <div className="table-wrap"><table className="process-table"><thead><tr><th>公司 / 岗位</th><th>当前进度</th><th>下一安排</th><th>当前状态</th><th>优先级</th><th className="actions-column">操作</th></tr></thead><tbody>
       {applications.map((a: Application) => {
-        const items = appSessions(a.id); const next = nextSession(items); const isOpen = expanded === a.id;
+        const items = appSessions(a.id); const next = nextSession(items); const isOpen = expanded === a.id; const hasSubmitted = a.status !== "准备投递";
         return <Fragment key={a.id}>
           <tr><td><div className="company-cell"><i>{a.company[0]}</i><span><b>{a.company}</b><small>{a.role}{a.location ? ` · ${a.location}` : ""}</small></span><button className="flow-toggle" onClick={() => setExpanded(isOpen ? "" : a.id)}>{isOpen ? "收起流程" : `查看流程${items.length ? ` (${items.length})` : ""}`}<em>{isOpen ? "⌃" : "⌄"}</em></button></div></td><td><span className="stage-pill">{currentStage(a, items)}</span></td><td>{next ? <button className="next-process" onClick={() => onOpenSession(next)}><b>{next.round || next.type}</b><small>{formatDate(next.scheduled_at)}</small></button> : <span className="no-plan">暂无安排</span>}</td><td><select className="status-select" value={a.status} onChange={(e) => onStatus(a, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></td><td><span className={`priority p-${a.priority}`}>{a.priority}</span></td><td className="actions-column"><div className="row-actions"><button className="session-action" onClick={() => onSession(a.id)}>＋ 招聘流程</button><button className="edit-action" onClick={() => onEdit(a)}>✎ 编辑</button><button className="delete-action" onClick={() => onDelete(a)}>× 删除</button></div></td></tr>
           {isOpen && <tr className="process-detail-row"><td colSpan={6}><div className="process-track">
-            <div className="process-node process-base"><span className="process-kind complete">完成</span><span><b>投递</b><small>{a.applied_at || "日期未填"}</small></span></div>
+            <div className="process-node process-base"><span className={`process-kind ${hasSubmitted ? "complete" : "pending"}`}>{hasSubmitted ? "完成" : "待投"}</span><span><b>{hasSubmitted ? "已投递" : "准备投递"}</b><small>{a.applied_at ? `${hasSubmitted ? "投递" : "计划"} ${a.applied_at}` : "日期未填"}</small></span></div>
             {items.map((s: Session) => { const future = Boolean(s.scheduled_at && +new Date(s.scheduled_at) >= Date.now()); return <div className={`process-item ${future ? "upcoming" : "done"}`} key={s.id}><button className="process-node-main" onClick={() => onOpenSession(s)}><span className={`process-kind ${s.type === "笔试" ? "exam" : "interview"}`}>{s.type}</span><span><b>{s.round || s.type}</b><small>{formatDate(s.scheduled_at)} · {future ? "待进行" : s.result || "已完成"}</small></span></button><div className="process-node-actions"><button onClick={() => onOpenSession(s)}>编辑</button><button className="remove" onClick={() => onDeleteSession(s)}>删除</button></div></div>; })}
             <button className="process-add" onClick={() => onSession(a.id)}>＋ 添加下一轮</button>
           </div></td></tr>}

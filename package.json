@@ -1,9 +1,13 @@
 {
   "name": "autumn-recruitment-tracker",
-  "version": "0.1.0",
+  "version": "1.0.3",
+  "productName": "秋招手账",
+  "description": "本地优先的秋招投递、笔试、面试与简历管理工具",
+  "author": "ahao224",
+  "main": "electron/main.cjs",
   "private": true,
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.13.0 <23"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -11,17 +15,24 @@
     "api": "node server/local-api.mjs",
     "build": "vinext build",
     "start": "vinext start",
+    "desktop": "electron .",
+    "package:win": "npm run build && electron-forge make --platform=win32 --arch=x64",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
-    "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "electron-squirrel-startup": "^1.0.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-server-dom-webpack": "19.2.8",
+    "vinext": "1.0.0-beta.8"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-squirrel": "^7.11.2",
     "@eslint/js": "9.39.4",
     "@next/eslint-plugin-next": "16.2.6",
     "@openai/sites-vite-plugin": "0.1.0",
@@ -30,20 +41,22 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
-    "@vitejs/plugin-rsc": "0.5.26",
+    "@vitejs/plugin-rsc": "0.5.34",
     "drizzle-kit": "0.31.10",
+    "electron": "^44.0.0",
     "eslint": "9.39.4",
     "eslint-plugin-jsx-a11y": "6.10.2",
     "eslint-plugin-react": "7.37.5",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "16.4.0",
-    "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.59.3",
-    "vinext": "1.0.0-beta.2",
-    "vite": "8.0.13",
+    "vite": "8.2.2",
     "wrangler": "4.92.0"
+  },
+  "overrides": {
+    "fast-uri": "3.1.5"
   },
   "type": "module"
 }

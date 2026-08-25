@@ -98,3 +98,8 @@ actions tied to the current ChatGPT user. Leave public content anonymous.
 
 - [vinext Documentation](https://github.com/cloudflare/vinext)
 - [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+# Windows 安装版
+
+使用 Node.js 22 运行 `npm run package:win`，会在 `out/make/squirrel.windows/x64/` 生成 Windows 安装程序。安装版不会携带开发者的个人数据；每位用户的数据默认保存在自己的“文档\\秋招手账数据”目录。为兼容早期个人版，如果电脑上已经存在 `D:\\222\\data\\autumn-recruitment.db`，安装版会继续使用该目录，不会丢失旧数据。
+
+安装后无需 Node.js、Git 或命令行，直接从桌面快捷方式启动。未签名的测试安装包可能触发 Windows SmartScreen 提示，正式公开分发前建议增加代码签名。
