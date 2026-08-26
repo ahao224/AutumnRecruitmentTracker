@@ -6,6 +6,7 @@ import "./process-fixes.css";
 
 const API = "http://localhost:4311/api";
 const statuses = ["准备投递", "已投递", "笔试", "面试", "Offer", "拒绝", "放弃"];
+const rejectionStages = ["初筛挂", "笔试挂", "测评挂", "一面挂", "二面挂", "三面挂"];
 const interviewRounds = ["技术一面", "技术二面", "技术三面", "HR面", "终面"];
 const examRounds = ["在线笔试", "线下笔试", "编程测评", "性格测评"];
 const navItems = [
@@ -13,14 +14,14 @@ const navItems = [
   ["calendar", "□", "日程"], ["insights", "↗", "数据复盘"], ["resumes", "◈", "我的简历"], ["data", "◇", "数据与备份"],
 ] as const;
 
-type Application = Record<string, string | number> & { id: string; company: string; role: string; status: string; priority: string };
+type Application = Record<string, string | number> & { id: string; company: string; role: string; status: string; rejection_stage: string; priority: string };
 type Session = Record<string, string | number> & { id: string; application_id: string; company: string; role: string; type: string; round: string; scheduled_at: string; result: string };
 type Question = { id?: string; content: string; answer: string; reference_answer: string; category: string; needs_review: number | boolean };
 type SessionDetail = Session & { questions: Question[]; attachments: { id: string; original_name: string; mime_type: string; size: number }[] };
 type Resume = { id: string; title: string; version: string; target_role: string; notes: string; original_name: string; mime_type: string; size: number; created_at: string };
 type ScheduleEvent = { id: string; application_id: string; title: string; event_type: string; scheduled_at: string; location: string; reminder: string; notes: string; completed: number; company?: string; role?: string };
 
-const emptyApp = { company: "", role: "", location: "", channel: "", apply_url: "", applied_at: "", status: "准备投递", priority: "中", salary: "", jd: "", referral: "", resume_version: "", notes: "" };
+const emptyApp = { company: "", role: "", location: "", channel: "", apply_url: "", applied_at: "", status: "准备投递", rejection_stage: "", priority: "中", salary: "", jd: "", referral: "", resume_version: "", notes: "" };
 const emptySession = { application_id: "", type: "面试", round: "技术一面", scheduled_at: "", duration: "60", format: "视频", location: "", interviewer: "", result: "待进行", notification_date: "", overall_notes: "", improvements: "", rating: "0", questions: [] as Question[] };
 const emptySchedule = { application_id: "", title: "", event_type: "投递截止", scheduled_at: "", location: "", reminder: "提前1天", notes: "", completed: 0 };
 
@@ -37,6 +38,7 @@ function formatDate(value: string, withTime = true) {
   return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", ...(withTime ? { hour: "2-digit", minute: "2-digit" } : {}) }).format(date);
 }
 function todayGreeting() { const hour = new Date().getHours(); return hour < 11 ? "早上好" : hour < 18 ? "下午好" : "晚上好"; }
+function displayStatus(app: Application) { return app.status === "拒绝" && app.rejection_stage ? `拒绝 · ${app.rejection_stage}` : app.status; }
 
 export default function Home() {
   const [view, setView] = useState("overview");
@@ -89,7 +91,13 @@ export default function Home() {
     try { setSessionEditor(await request(`/sessions/${session.id}`)); } catch (e) { notify(e instanceof Error ? e.message : "读取失败"); }
   }
   function newSession(applicationId = "") { setPrefillApp(applicationId); setSessionEditor("new"); }
-  async function updateStatus(app: Application, status: string) { await request(`/applications/${app.id}`, { method: "PATCH", body: JSON.stringify({ status }) }); await load(); notify(`已更新为“${status}”`); }
+  async function updateStatus(app: Application, status: string, rejectionStage?: string) {
+    const payload: Record<string, string> = { status };
+    if (status !== "拒绝" || rejectionStage !== undefined) payload.rejection_stage = status === "拒绝" ? rejectionStage || "" : "";
+    await request(`/applications/${app.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+    await load();
+    notify(`已更新为“${status === "拒绝" && rejectionStage ? `拒绝 · ${rejectionStage}` : status}”`);
+  }
   async function deleteApplication(app: Application) {
     if (!confirm(`确定删除“${app.company} · ${app.role}”吗？该岗位下的笔面试记录和附件也会一起删除。`)) return;
     try { await request(`/applications/${app.id}`, { method: "DELETE" }); await load(); notify("投递记录已删除"); }
@@ -159,7 +167,7 @@ function Overview({ applications, sessions, upcoming, onAddApp, onAddSession, on
     <section className="stage-grid">{cards.map((item, i) => <button className={`stat tone-${i}`} key={item.label} onClick={() => onView(item.target)}><p>{item.label}</p><strong>{item.count}</strong><span>{item.caption} →</span></button>)}</section>
     <section className="dashboard-grid">
       <article className="panel applications"><div className="panel-title"><div><p className="eyebrow">正在进行</p><h2>最近投递</h2></div><button className="text-button" onClick={() => onView("applications")}>查看全部 →</button></div>
-        {recent.length ? <div className="application-list">{recent.map((a: Application) => <div className="application" key={a.id}><div className="company-mark">{a.company[0]}</div><div className="grow"><b>{a.company}</b><span>{a.role}{a.location ? ` · ${a.location}` : ""}</span></div><span className={`status-chip s-${statuses.indexOf(a.status)}`}>{a.status}</span><button className="mini-action" onClick={() => onAddSession(a.id)}>记一场</button></div>)}</div> : <Empty title="还没有投递记录" text="从第一家公司开始，建立你的秋招进度。" action="新增第一条投递" onClick={onAddApp} />}
+        {recent.length ? <div className="application-list">{recent.map((a: Application) => <div className="application" key={a.id}><div className="company-mark">{a.company[0]}</div><div className="grow"><b>{a.company}</b><span>{a.role}{a.location ? ` · ${a.location}` : ""}</span></div><span className={`status-chip s-${statuses.indexOf(a.status)}`}>{displayStatus(a)}</span><button className="mini-action" onClick={() => onAddSession(a.id)}>记一场</button></div>)}</div> : <Empty title="还没有投递记录" text="从第一家公司开始，建立你的秋招进度。" action="新增第一条投递" onClick={onAddApp} />}
       </article>
       <article className="panel next-up"><p className="eyebrow">接下来</p><h2>近期日程</h2>{upcoming.length ? <div className="timeline">{upcoming.slice(0, 3).map((s: any) => <button key={`${s.source}-${s.id}`} onClick={() => s.source === "session" ? onOpenSession(s) : onOpenSchedule(s)}><time>{new Date(s.scheduled_at).getDate()}<small>{new Date(s.scheduled_at).getMonth() + 1}月</small></time><p><b>{s.agendaTitle}</b><span>{formatDate(s.scheduled_at)} · {s.source === "session" ? "笔面试" : s.event_type}</span></p></button>)}</div> : <Empty compact title="最近没有安排" text="添加截止日期、宣讲会、提醒或笔面试安排。" action="添加日程" onClick={onAddSchedule} />}</article>
       <article className="panel reflection"><p className="eyebrow">累计沉淀</p><h2>{sessions.reduce((n: number, s: Session) => n + Number(s.question_count || 0), 0)} 道题目被记录</h2><p>逐题写下你的回答和参考答案，勾选待复习项，让每一次经历都有价值。</p><button className="secondary" onClick={() => onView("sessions")}>查看全部复盘</button></article>
@@ -172,6 +180,7 @@ function ApplicationsView({ applications, sessions, search, setSearch, filter, s
   function appSessions(id: string) { return sessions.filter((s: Session) => s.application_id === id).sort((a: Session, b: Session) => +new Date(a.scheduled_at || 0) - +new Date(b.scheduled_at || 0)); }
   function nextSession(items: Session[]) { return items.filter((s) => s.scheduled_at && +new Date(s.scheduled_at) >= Date.now()).sort((a, b) => +new Date(a.scheduled_at) - +new Date(b.scheduled_at))[0]; }
   function currentStage(app: Application, items: Session[]) {
+    if (app.status === "拒绝") return displayStatus(app);
     const next = nextSession(items);
     if (next) return `${next.round || next.type}待进行`;
     const latest = [...items].sort((a, b) => +new Date(b.scheduled_at || 0) - +new Date(a.scheduled_at || 0))[0];
@@ -183,7 +192,7 @@ function ApplicationsView({ applications, sessions, search, setSearch, filter, s
       {applications.map((a: Application) => {
         const items = appSessions(a.id); const next = nextSession(items); const isOpen = expanded === a.id; const hasSubmitted = a.status !== "准备投递";
         return <Fragment key={a.id}>
-          <tr><td><div className="company-cell"><i>{a.company[0]}</i><span><b>{a.company}</b><small>{a.role}{a.location ? ` · ${a.location}` : ""}</small></span><button className="flow-toggle" onClick={() => setExpanded(isOpen ? "" : a.id)}>{isOpen ? "收起流程" : `查看流程${items.length ? ` (${items.length})` : ""}`}<em>{isOpen ? "⌃" : "⌄"}</em></button></div></td><td><span className="stage-pill">{currentStage(a, items)}</span></td><td>{next ? <button className="next-process" onClick={() => onOpenSession(next)}><b>{next.round || next.type}</b><small>{formatDate(next.scheduled_at)}</small></button> : <span className="no-plan">暂无安排</span>}</td><td><select className="status-select" value={a.status} onChange={(e) => onStatus(a, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></td><td><span className={`priority p-${a.priority}`}>{a.priority}</span></td><td className="actions-column"><div className="row-actions"><button className="session-action" onClick={() => onSession(a.id)}>＋ 招聘流程</button><button className="edit-action" onClick={() => onEdit(a)}>✎ 编辑</button><button className="delete-action" onClick={() => onDelete(a)}>× 删除</button></div></td></tr>
+           <tr><td><div className="company-cell"><i>{a.company[0]}</i><span><b>{a.company}</b><small>{a.role}{a.location ? ` · ${a.location}` : ""}</small></span><button className="flow-toggle" onClick={() => setExpanded(isOpen ? "" : a.id)}>{isOpen ? "收起流程" : `查看流程${items.length ? ` (${items.length})` : ""}`}<em>{isOpen ? "⌃" : "⌄"}</em></button></div></td><td><span className="stage-pill">{currentStage(a, items)}</span></td><td>{next ? <button className="next-process" onClick={() => onOpenSession(next)}><b>{next.round || next.type}</b><small>{formatDate(next.scheduled_at)}</small></button> : <span className="no-plan">暂无安排</span>}</td><td><div className="status-control"><select className="status-select" value={a.status} onChange={(e) => onStatus(a, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select>{a.status === "拒绝" && <select className="status-select rejection-stage-select" aria-label="拒绝阶段" value={a.rejection_stage || ""} onChange={(e) => onStatus(a, "拒绝", e.target.value)}><option value="">选择拒绝阶段</option>{rejectionStages.map((stage) => <option key={stage}>{stage}</option>)}</select>}</div></td><td><span className={`priority p-${a.priority}`}>{a.priority}</span></td><td className="actions-column"><div className="row-actions"><button className="session-action" onClick={() => onSession(a.id)}>＋ 招聘流程</button><button className="edit-action" onClick={() => onEdit(a)}>✎ 编辑</button><button className="delete-action" onClick={() => onDelete(a)}>× 删除</button></div></td></tr>
           {isOpen && <tr className="process-detail-row"><td colSpan={6}><div className="process-track">
             <div className="process-node process-base"><span className={`process-kind ${hasSubmitted ? "complete" : "pending"}`}>{hasSubmitted ? "完成" : "待投"}</span><span><b>{hasSubmitted ? "已投递" : "准备投递"}</b><small>{a.applied_at ? `${hasSubmitted ? "投递" : "计划"} ${a.applied_at}` : "日期未填"}</small></span></div>
             {items.map((s: Session) => { const future = Boolean(s.scheduled_at && +new Date(s.scheduled_at) >= Date.now()); return <div className={`process-item ${future ? "upcoming" : "done"}`} key={s.id}><button className="process-node-main" onClick={() => onOpenSession(s)}><span className={`process-kind ${s.type === "笔试" ? "exam" : "interview"}`}>{s.type}</span><span><b>{s.round || s.type}</b><small>{formatDate(s.scheduled_at)} · {future ? "待进行" : s.result || "已完成"}</small></span></button><div className="process-node-actions"><button onClick={() => onOpenSession(s)}>编辑</button><button className="remove" onClick={() => onDeleteSession(s)}>删除</button></div></div>; })}
@@ -273,7 +282,7 @@ function ApplicationEditor({ value, onClose, onSaved }: any) {
   function field(key: string) { return { value: form[key] ?? "", onChange: (e: any) => setForm({ ...form, [key]: e.target.value }) }; }
   async function submit(e: FormEvent) { e.preventDefault(); setSaving(true); try { await request(value ? `/applications/${value.id}` : "/applications", { method: value ? "PATCH" : "POST", body: JSON.stringify(form) }); onSaved(); } catch (err) { alert(err instanceof Error ? err.message : "保存失败"); } finally { setSaving(false); } }
   async function remove() { if (!value || !confirm("删除后，该岗位下的笔面试记录也会删除。确定继续吗？")) return; await request(`/applications/${value.id}`, { method: "DELETE" }); onSaved(); }
-  return <Modal title={value ? "编辑投递" : "新增投递"} subtitle="先记下关键信息，其余内容可以随时补充。" onClose={onClose}><form onSubmit={submit}><div className="form-grid"><label>公司名称 *<input required autoFocus {...field("company")} placeholder="例如：字节跳动" /></label><label>岗位名称 *<input required {...field("role")} placeholder="例如：后端开发工程师" /></label><label>当前阶段<select {...field("status")}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></label><label>优先级<select {...field("priority")}><option>高</option><option>中</option><option>低</option></select></label><label>工作地点<input {...field("location")} placeholder="北京 / 上海 / 深圳" /></label><label>投递日期<input type="date" {...field("applied_at")} /></label><label>投递渠道<input {...field("channel")} placeholder="官网 / 内推 / Boss" /></label><label>简历版本<input {...field("resume_version")} placeholder="例如：后端-v3" /></label><label className="full">网申或 JD 链接<input type="url" {...field("apply_url")} placeholder="https://" /></label><label>薪资信息<input {...field("salary")} placeholder="选填" /></label><label>内推人 / 联系方式<input {...field("referral")} placeholder="选填" /></label><label className="full">岗位 JD<textarea rows={3} {...field("jd")} /></label><label className="full">备注<textarea rows={3} {...field("notes")} placeholder="业务方向、准备重点、沟通记录…" /></label></div><div className="modal-actions">{value && <button type="button" className="danger" onClick={remove}>删除记录</button>}<span /><button type="button" className="secondary compact" onClick={onClose}>取消</button><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存投递"}</button></div></form></Modal>;
+  return <Modal title={value ? "编辑投递" : "新增投递"} subtitle="先记下关键信息，其余内容可以随时补充。" onClose={onClose}><form onSubmit={submit}><div className="form-grid"><label>公司名称 *<input required autoFocus {...field("company")} placeholder="例如：字节跳动" /></label><label>岗位名称 *<input required {...field("role")} placeholder="例如：后端开发工程师" /></label><label>当前阶段<select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value, rejection_stage: e.target.value === "拒绝" ? form.rejection_stage : "" })}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></label>{form.status === "拒绝" && <label>拒绝阶段 *<select required {...field("rejection_stage")}><option value="">请选择</option>{rejectionStages.map((stage) => <option key={stage}>{stage}</option>)}</select></label>}<label>优先级<select {...field("priority")}><option>高</option><option>中</option><option>低</option></select></label><label>工作地点<input {...field("location")} placeholder="北京 / 上海 / 深圳" /></label><label>投递日期<input type="date" {...field("applied_at")} /></label><label>投递渠道<input {...field("channel")} placeholder="官网 / 内推 / Boss" /></label><label>简历版本<input {...field("resume_version")} placeholder="例如：后端-v3" /></label><label className="full">网申或 JD 链接<input type="url" {...field("apply_url")} placeholder="https://" /></label><label>薪资信息<input {...field("salary")} placeholder="选填" /></label><label>内推人 / 联系方式<input {...field("referral")} placeholder="选填" /></label><label className="full">岗位 JD<textarea rows={3} {...field("jd")} /></label><label className="full">备注<textarea rows={3} {...field("notes")} placeholder="业务方向、准备重点、沟通记录…" /></label></div><div className="modal-actions">{value && <button type="button" className="danger" onClick={remove}>删除记录</button>}<span /><button type="button" className="secondary compact" onClick={onClose}>取消</button><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存投递"}</button></div></form></Modal>;
 }
 
 function SessionEditor({ value, applications, sessions, initialApplication, onClose, onSaved, onRefresh, notify }: any) {

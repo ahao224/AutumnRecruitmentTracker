@@ -28,6 +28,7 @@ db.exec(`
     apply_url TEXT NOT NULL DEFAULT '',
     applied_at TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT '准备投递',
+    rejection_stage TEXT NOT NULL DEFAULT '',
     priority TEXT NOT NULL DEFAULT '中',
     salary TEXT NOT NULL DEFAULT '',
     jd TEXT NOT NULL DEFAULT '',
@@ -38,6 +39,10 @@ db.exec(`
     updated_at TEXT NOT NULL
   )
 `);
+const applicationSchema = db.prepare("PRAGMA table_info(applications)").all();
+if (!applicationSchema.some((column) => column.name === "rejection_stage")) {
+  db.exec("ALTER TABLE applications ADD COLUMN rejection_stage TEXT NOT NULL DEFAULT ''");
+}
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -121,7 +126,8 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_questions_session_order ON questions(ses
 db.exec("CREATE INDEX IF NOT EXISTS idx_schedule_events_date ON schedule_events(scheduled_at)");
 db.exec("PRAGMA optimize");
 
-const applicationColumns = ["company", "role", "location", "channel", "apply_url", "applied_at", "status", "priority", "salary", "jd", "referral", "resume_version", "notes"];
+const rejectionStages = new Set(["初筛挂", "笔试挂", "测评挂", "一面挂", "二面挂", "三面挂"]);
+const applicationColumns = ["company", "role", "location", "channel", "apply_url", "applied_at", "status", "rejection_stage", "priority", "salary", "jd", "referral", "resume_version", "notes"];
 const sessionColumns = ["application_id", "type", "round", "scheduled_at", "duration", "format", "location", "interviewer", "result", "notification_date", "overall_notes", "improvements", "rating"];
 const scheduleColumns = ["application_id", "title", "event_type", "scheduled_at", "location", "reminder", "notes", "completed"];
 
@@ -201,15 +207,26 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && pathname === "/api/applications") {
       const body = await readJson(req);
       if (!clean(body.company) || !clean(body.role)) return json(res, 400, { error: "公司和岗位不能为空" });
+      const status = clean(body.status, "准备投递");
+      const rejectionStage = status === "拒绝" && rejectionStages.has(clean(body.rejection_stage)) ? clean(body.rejection_stage) : "";
       const id = randomUUID();
       const stamp = now();
       db.prepare(`INSERT INTO applications (id,${applicationColumns.join(",")},created_at,updated_at) VALUES (${["?", ...applicationColumns.map(() => "?"), "?", "?"].join(",")})`)
-        .run(id, ...applicationColumns.map((key) => key === "priority" ? clean(body[key], "中") : key === "status" ? clean(body[key], "准备投递") : clean(body[key])), stamp, stamp);
+        .run(id, ...applicationColumns.map((key) => key === "priority" ? clean(body[key], "中") : key === "status" ? status : key === "rejection_stage" ? rejectionStage : clean(body[key])), stamp, stamp);
       return json(res, 201, { id });
     }
     const appMatch = pathname.match(/^\/api\/applications\/([^/]+)$/);
     if (appMatch && req.method === "PATCH") {
       const body = await readJson(req);
+      if (Object.hasOwn(body, "status")) {
+        const status = clean(body.status);
+        if (status !== "拒绝") body.rejection_stage = "";
+        else if (!Object.hasOwn(body, "rejection_stage")) body.rejection_stage = "";
+      }
+      if (Object.hasOwn(body, "rejection_stage")) {
+        const stage = clean(body.rejection_stage);
+        if (stage && !rejectionStages.has(stage)) return json(res, 400, { error: "请选择有效的拒绝阶段" });
+      }
       const sets = applicationColumns.filter((key) => Object.hasOwn(body, key));
       if (!sets.length) return json(res, 400, { error: "没有可更新的字段" });
       const values = sets.map((key) => clean(body[key]));
@@ -367,7 +384,7 @@ const server = http.createServer(async (req, res) => {
       db.exec("BEGIN");
       try {
         const insertApp = db.prepare(`INSERT OR REPLACE INTO applications (id,${applicationColumns.join(",")},created_at,updated_at) VALUES (${["?", ...applicationColumns.map(() => "?"), "?", "?"].join(",")})`);
-        body.applications.forEach((item) => insertApp.run(item.id || randomUUID(), ...applicationColumns.map((key) => clean(item[key])), item.created_at || now(), item.updated_at || now()));
+        body.applications.forEach((item) => insertApp.run(item.id || randomUUID(), ...applicationColumns.map((key) => key === "rejection_stage" ? (item.status === "拒绝" && rejectionStages.has(clean(item[key])) ? clean(item[key]) : "") : clean(item[key])), item.created_at || now(), item.updated_at || now()));
         const insertSession = db.prepare(`INSERT OR REPLACE INTO sessions (id,${sessionColumns.join(",")},created_at,updated_at) VALUES (${["?", ...sessionColumns.map(() => "?"), "?", "?"].join(",")})`);
         body.sessions.forEach((item) => insertSession.run(item.id || randomUUID(), ...sessionColumns.map((key) => ["duration", "rating"].includes(key) ? Number(item[key] || 0) : clean(item[key])), item.created_at || now(), item.updated_at || now()));
         const insertQuestion = db.prepare("INSERT OR REPLACE INTO questions (id,session_id,content,answer,reference_answer,category,needs_review,sort_order) VALUES (?,?,?,?,?,?,?,?)");

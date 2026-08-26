@@ -140,6 +140,28 @@
   padding: 10px;
 }
 
+.status-control {
+  display: grid;
+  gap: 6px;
+  min-width: 126px;
+}
+
+.status-control .status-select {
+  width: 100%;
+}
+
+.rejection-stage-select {
+  border-color: color-mix(in srgb, #e46d82 45%, var(--border)) !important;
+  color: #ff9aac !important;
+  background: color-mix(in srgb, #e46d82 8%, var(--surface)) !important;
+}
+
+html[data-theme="light"] .rejection-stage-select {
+  border-color: #efc5ce !important;
+  color: #b84159 !important;
+  background: #fff5f7 !important;
+}
+
 .process-item::after,
 .process-base::after {
   display: none !important;
