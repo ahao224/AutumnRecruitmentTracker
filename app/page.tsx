@@ -6,11 +6,12 @@ import "./process-fixes.css";
 
 const API = "http://localhost:4311/api";
 const statuses = ["准备投递", "已投递", "笔试", "面试", "Offer", "拒绝", "放弃"];
+const priorityRanks: Record<string, number> = { "高": 0, "中": 1, "低": 2 };
 const rejectionStages = ["初筛挂", "笔试挂", "测评挂", "一面挂", "二面挂", "三面挂"];
 const interviewRounds = ["技术一面", "技术二面", "技术三面", "HR面", "终面"];
 const examRounds = ["在线笔试", "线下笔试", "编程测评", "性格测评"];
 const navItems = [
-  ["overview", "⌂", "总览"], ["applications", "▤", "投递管理"], ["sessions", "✎", "招聘流程"],
+  ["overview", "⌂", "总览"], ["board", "▦", "投递总览"], ["applications", "▤", "投递管理"], ["sessions", "✎", "招聘流程"],
   ["calendar", "□", "日程"], ["insights", "↗", "数据复盘"], ["resumes", "◈", "我的简历"], ["data", "◇", "数据与备份"],
 ] as const;
 
@@ -39,6 +40,13 @@ function formatDate(value: string, withTime = true) {
 }
 function todayGreeting() { const hour = new Date().getHours(); return hour < 11 ? "早上好" : hour < 18 ? "下午好" : "晚上好"; }
 function displayStatus(app: Application) { return app.status === "拒绝" && app.rejection_stage ? `拒绝 · ${app.rejection_stage}` : app.status; }
+function externalUrl(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const candidate = /^[a-z][a-z\d+.-]*:/i.test(raw) ? raw : `https://${raw}`;
+  try { const url = new URL(candidate); return ["http:", "https:"].includes(url.protocol) ? url.href : ""; }
+  catch { return ""; }
+}
 
 export default function Home() {
   const [view, setView] = useState("overview");
@@ -111,6 +119,7 @@ export default function Home() {
 
   const viewTitle: Record<string, [string, string]> = {
     overview: [`${todayGreeting()}，今天继续向前。`, "把每一次投递和复盘，都变成下一次机会的底气。"],
+    board: ["投递总览", "上百家企业，也能一眼看清每一份投递走到了哪里。"],
     applications: ["投递管理", "公司、岗位和进度都在这里。"], sessions: ["招聘流程", "按时间串起笔试与每一轮面试，结束后逐场复盘。"],
     calendar: ["近期日程", "别错过笔试、面试和结果通知。"], insights: ["数据复盘", "看清投递转化，也看见自己的进步。"], resumes: ["我的简历库", "集中管理不同方向与版本的简历。"], data: ["数据与备份", "所有核心数据仅保存在你的电脑。"],
   };
@@ -132,6 +141,7 @@ export default function Home() {
         {error && <div className="alert"><b>暂时无法读取本地数据</b><span>{error}。请关闭当前页面，然后从桌面重新打开“秋招手账”。</span><button onClick={load}>重新连接</button></div>}
         {loading ? <div className="loading">正在打开你的秋招手账…</div> : <>
           {view === "overview" && <Overview applications={applications} sessions={sessions} upcoming={upcoming} onAddApp={() => setAppEditor("new")} onAddSession={newSession} onAddSchedule={() => setScheduleEditor("new")} onOpenSession={openSession} onOpenSchedule={setScheduleEditor} onView={setView} />}
+          {view === "board" && <ApplicationBoard applications={applications} onEdit={setAppEditor} onAdd={() => setAppEditor("new")} />}
           {view === "applications" && <ApplicationsView applications={filteredApps} sessions={sessions} search={search} setSearch={setSearch} filter={statusFilter} setFilter={setStatusFilter} onEdit={setAppEditor} onDelete={deleteApplication} onStatus={updateStatus} onSession={newSession} onOpenSession={openSession} onDeleteSession={deleteSessionFromList} />}
           {view === "sessions" && <SessionsView sessions={sessions} onOpen={openSession} onAdd={() => newSession()} />}
           {view === "calendar" && <CalendarView sessions={sessions} schedules={schedules} onOpenSession={openSession} onOpenSchedule={setScheduleEditor} onAdd={() => setScheduleEditor("new")} />}
@@ -175,8 +185,55 @@ function Overview({ applications, sessions, upcoming, onAddApp, onAddSession, on
   </>;
 }
 
+function ApplicationBoard({ applications, onEdit, onAdd }: { applications: Application[]; onEdit: (app: Application) => void; onAdd: () => void }) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("全部");
+  const [priorityFilter, setPriorityFilter] = useState("全部优先级");
+  const [sortBy, setSortBy] = useState("最近更新");
+  const [compact, setCompact] = useState(false);
+  const counts = useMemo(() => Object.fromEntries(statuses.map((status) => [status, applications.filter((app) => app.status === status).length])), [applications]);
+  const visible = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    const next = applications.filter((app) => (filter === "全部" || app.status === filter) && (priorityFilter === "全部优先级" || app.priority === priorityFilter) && (!keyword || `${app.company}${app.role}${app.location || ""}${app.channel || ""}`.toLowerCase().includes(keyword)));
+    return [...next].sort((a, b) => {
+      if (sortBy === "公司名称") return a.company.localeCompare(b.company, "zh-CN");
+      if (sortBy === "当前进度") return statuses.indexOf(a.status) - statuses.indexOf(b.status) || a.company.localeCompare(b.company, "zh-CN");
+      if (sortBy === "优先级：高到低") return (priorityRanks[a.priority] ?? 1) - (priorityRanks[b.priority] ?? 1) || +new Date(String(b.updated_at || 0)) - +new Date(String(a.updated_at || 0));
+      if (sortBy === "优先级：低到高") return (priorityRanks[b.priority] ?? 1) - (priorityRanks[a.priority] ?? 1) || +new Date(String(b.updated_at || 0)) - +new Date(String(a.updated_at || 0));
+      return +new Date(String(b.updated_at || 0)) - +new Date(String(a.updated_at || 0));
+    });
+  }, [applications, filter, priorityFilter, query, sortBy]);
+
+  return <section className="application-board">
+    <div className="board-overview">
+      <div className="board-total"><span>全部企业</span><strong>{applications.length}</strong><small>份投递记录</small></div>
+      <div className="board-legend" aria-label="按投递状态筛选">
+        <button className={filter === "全部" ? "active" : ""} onClick={() => setFilter("全部")} aria-pressed={filter === "全部"}><i className="legend-all" />全部<b>{applications.length}</b></button>
+        {statuses.map((status, index) => <button key={status} className={filter === status ? "active" : ""} onClick={() => setFilter(status)} aria-pressed={filter === status}><i className={`legend-status-${index}`} />{status}<b>{counts[status]}</b></button>)}
+      </div>
+    </div>
+    <div className="board-toolbar">
+      <label className="board-search"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索公司、岗位、城市或渠道" /></label>
+      <label className="board-priority"><span>优先级</span><select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)}><option>全部优先级</option><option>高</option><option>中</option><option>低</option></select></label>
+      <label className="board-sort"><span>排序</span><select value={sortBy} onChange={(event) => setSortBy(event.target.value)}><option>最近更新</option><option>公司名称</option><option>当前进度</option><option>优先级：高到低</option><option>优先级：低到高</option></select></label>
+      <button className={`board-density ${compact ? "active" : ""}`} onClick={() => setCompact(!compact)} aria-pressed={compact}><i>▦</i>{compact ? "紧凑" : "舒展"}</button>
+      <span className="board-result">显示 <b>{visible.length}</b> / {applications.length}</span>
+    </div>
+    {visible.length ? <div className={`company-matrix ${compact ? "compact" : "comfortable"}`}>
+      {visible.map((app) => { const statusIndex = Math.max(0, statuses.indexOf(app.status)); return <button key={app.id} className={`company-tile board-status-${statusIndex}`} onClick={() => onEdit(app)} title={`${app.company} · ${app.role} · ${displayStatus(app)}`}>
+        <span className="company-tile-head"><b>{app.company}</b><i>{displayStatus(app)}</i></span>
+        <small>{app.role || "岗位未填写"}</small>
+        {!compact && <span className="company-tile-meta"><em>{app.location || "地点未填"}</em><em>{app.channel || "渠道未填"}</em></span>}
+      </button>; })}
+    </div> : <div className="board-empty"><Empty title={applications.length ? "没有符合条件的企业" : "还没有投递记录"} text={applications.length ? "换个状态或搜索关键词试试。" : "添加第一家公司后，这里会自动生成彩色投递矩阵。"} action={applications.length ? undefined : "新增第一条投递"} onClick={onAdd} /></div>}
+  </section>;
+}
+
 function ApplicationsView({ applications, sessions, search, setSearch, filter, setFilter, onEdit, onDelete, onStatus, onSession, onOpenSession, onDeleteSession }: any) {
   const [expanded, setExpanded] = useState("");
+  const [showSalary, setShowSalary] = useState(false);
+  useEffect(() => { setShowSalary(window.localStorage.getItem("autumn-show-salary") === "true"); }, []);
+  function toggleSalary() { const next = !showSalary; setShowSalary(next); window.localStorage.setItem("autumn-show-salary", String(next)); }
   function appSessions(id: string) { return sessions.filter((s: Session) => s.application_id === id).sort((a: Session, b: Session) => +new Date(a.scheduled_at || 0) - +new Date(b.scheduled_at || 0)); }
   function nextSession(items: Session[]) { return items.filter((s) => s.scheduled_at && +new Date(s.scheduled_at) >= Date.now()).sort((a, b) => +new Date(a.scheduled_at) - +new Date(b.scheduled_at))[0]; }
   function currentStage(app: Application, items: Session[]) {
@@ -187,13 +244,21 @@ function ApplicationsView({ applications, sessions, search, setSearch, filter, s
     return latest ? `${latest.round || latest.type}${latest.result && latest.result !== "待定" ? ` · ${latest.result}` : ""}` : app.status;
   }
   return <section className="workspace-panel">
-    <div className="toolbar"><label className="search">⌕<input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索公司、岗位或城市" /></label><select value={filter} onChange={(e) => setFilter(e.target.value)}><option>全部</option>{statuses.map((s) => <option key={s}>{s}</option>)}</select><span>{applications.length} 条记录</span></div>
-    {applications.length ? <div className="table-wrap"><table className="process-table"><thead><tr><th>公司 / 岗位</th><th>当前进度</th><th>下一安排</th><th>当前状态</th><th>优先级</th><th className="actions-column">操作</th></tr></thead><tbody>
+    <div className="toolbar"><label className="search">⌕<input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索公司、岗位或城市" /></label><select value={filter} onChange={(e) => setFilter(e.target.value)}><option>全部</option>{statuses.map((s) => <option key={s}>{s}</option>)}</select><button className={`salary-toggle ${showSalary ? "active" : ""}`} onClick={toggleSalary} aria-pressed={showSalary} aria-label={showSalary ? "隐藏薪资" : "显示薪资"}><i>￥</i>{showSalary ? "隐藏薪资" : "显示薪资"}</button><span>{applications.length} 条记录</span></div>
+    {applications.length ? <div className="table-wrap"><table className={`process-table ${showSalary ? "show-salary" : ""}`}><thead><tr><th>公司 / 岗位</th><th>当前进度</th><th>下一安排</th><th>当前状态</th><th>优先级</th>{showSalary && <th className="salary-column">薪资</th>}<th className="actions-column">操作</th></tr></thead><tbody>
       {applications.map((a: Application) => {
-        const items = appSessions(a.id); const next = nextSession(items); const isOpen = expanded === a.id; const hasSubmitted = a.status !== "准备投递";
+        const items = appSessions(a.id); const next = nextSession(items); const isOpen = expanded === a.id; const hasSubmitted = a.status !== "准备投递"; const directUrl = externalUrl(a.apply_url);
         return <Fragment key={a.id}>
-           <tr><td><div className="company-cell"><i>{a.company[0]}</i><span><b>{a.company}</b><small>{a.role}{a.location ? ` · ${a.location}` : ""}</small></span><button className="flow-toggle" onClick={() => setExpanded(isOpen ? "" : a.id)}>{isOpen ? "收起流程" : `查看流程${items.length ? ` (${items.length})` : ""}`}<em>{isOpen ? "⌃" : "⌄"}</em></button></div></td><td><span className="stage-pill">{currentStage(a, items)}</span></td><td>{next ? <button className="next-process" onClick={() => onOpenSession(next)}><b>{next.round || next.type}</b><small>{formatDate(next.scheduled_at)}</small></button> : <span className="no-plan">暂无安排</span>}</td><td><div className="status-control"><select className="status-select" value={a.status} onChange={(e) => onStatus(a, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select>{a.status === "拒绝" && <select className="status-select rejection-stage-select" aria-label="拒绝阶段" value={a.rejection_stage || ""} onChange={(e) => onStatus(a, "拒绝", e.target.value)}><option value="">选择拒绝阶段</option>{rejectionStages.map((stage) => <option key={stage}>{stage}</option>)}</select>}</div></td><td><span className={`priority p-${a.priority}`}>{a.priority}</span></td><td className="actions-column"><div className="row-actions"><button className="session-action" onClick={() => onSession(a.id)}>＋ 招聘流程</button><button className="edit-action" onClick={() => onEdit(a)}>✎ 编辑</button><button className="delete-action" onClick={() => onDelete(a)}>× 删除</button></div></td></tr>
-          {isOpen && <tr className="process-detail-row"><td colSpan={6}><div className="process-track">
+          <tr>
+            <td><div className="company-cell"><i>{a.company[0]}</i><span><b>{a.company}</b><small>{a.role}{a.location ? ` · ${a.location}` : ""}</small></span><button className="flow-toggle" onClick={() => setExpanded(isOpen ? "" : a.id)}>{isOpen ? "收起流程" : `查看流程${items.length ? ` (${items.length})` : ""}`}<em>{isOpen ? "⌃" : "⌄"}</em></button></div></td>
+            <td><span className="stage-pill">{currentStage(a, items)}</span></td>
+            <td>{next ? <button className="next-process" onClick={() => onOpenSession(next)}><b>{next.round || next.type}</b><small>{formatDate(next.scheduled_at)}</small></button> : <span className="no-plan">暂无安排</span>}</td>
+            <td><div className="status-control"><select className="status-select" value={a.status} onChange={(e) => onStatus(a, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select>{a.status === "拒绝" && <select className="status-select rejection-stage-select" aria-label="拒绝阶段" value={a.rejection_stage || ""} onChange={(e) => onStatus(a, "拒绝", e.target.value)}><option value="">选择拒绝阶段</option>{rejectionStages.map((stage) => <option key={stage}>{stage}</option>)}</select>}</div></td>
+            <td><span className={`priority p-${a.priority}`}>{a.priority}</span></td>
+            {showSalary && <td className="salary-column"><span className={a.salary ? "salary-value" : "salary-empty"}>{a.salary || "未填写"}</span></td>}
+            <td className="actions-column"><div className="row-actions">{directUrl && <a className="link-action" href={directUrl} target="_blank" rel="noopener noreferrer" aria-label={`打开 ${a.company} 的网申或 JD 链接`}>↗ 直达</a>}<button className="session-action" onClick={() => onSession(a.id)}>＋ 招聘流程</button><button className="edit-action" onClick={() => onEdit(a)}>✎ 编辑</button><button className="delete-action" onClick={() => onDelete(a)}>× 删除</button></div></td>
+          </tr>
+          {isOpen && <tr className="process-detail-row"><td colSpan={showSalary ? 7 : 6}><div className="process-track">
             <div className="process-node process-base"><span className={`process-kind ${hasSubmitted ? "complete" : "pending"}`}>{hasSubmitted ? "完成" : "待投"}</span><span><b>{hasSubmitted ? "已投递" : "准备投递"}</b><small>{a.applied_at ? `${hasSubmitted ? "投递" : "计划"} ${a.applied_at}` : "日期未填"}</small></span></div>
             {items.map((s: Session) => { const future = Boolean(s.scheduled_at && +new Date(s.scheduled_at) >= Date.now()); return <div className={`process-item ${future ? "upcoming" : "done"}`} key={s.id}><button className="process-node-main" onClick={() => onOpenSession(s)}><span className={`process-kind ${s.type === "笔试" ? "exam" : "interview"}`}>{s.type}</span><span><b>{s.round || s.type}</b><small>{formatDate(s.scheduled_at)} · {future ? "待进行" : s.result || "已完成"}</small></span></button><div className="process-node-actions"><button onClick={() => onOpenSession(s)}>编辑</button><button className="remove" onClick={() => onDeleteSession(s)}>删除</button></div></div>; })}
             <button className="process-add" onClick={() => onSession(a.id)}>＋ 添加下一轮</button>
@@ -279,10 +344,31 @@ function ScheduleEditor({ value, applications, onClose, onSaved }: any) {
 
 function ApplicationEditor({ value, onClose, onSaved }: any) {
   const [form, setForm] = useState({ ...emptyApp, ...(value || {}) }); const [saving, setSaving] = useState(false);
+  const directUrl = externalUrl(form.apply_url);
   function field(key: string) { return { value: form[key] ?? "", onChange: (e: any) => setForm({ ...form, [key]: e.target.value }) }; }
   async function submit(e: FormEvent) { e.preventDefault(); setSaving(true); try { await request(value ? `/applications/${value.id}` : "/applications", { method: value ? "PATCH" : "POST", body: JSON.stringify(form) }); onSaved(); } catch (err) { alert(err instanceof Error ? err.message : "保存失败"); } finally { setSaving(false); } }
   async function remove() { if (!value || !confirm("删除后，该岗位下的笔面试记录也会删除。确定继续吗？")) return; await request(`/applications/${value.id}`, { method: "DELETE" }); onSaved(); }
-  return <Modal title={value ? "编辑投递" : "新增投递"} subtitle="先记下关键信息，其余内容可以随时补充。" onClose={onClose}><form onSubmit={submit}><div className="form-grid"><label>公司名称 *<input required autoFocus {...field("company")} placeholder="例如：字节跳动" /></label><label>岗位名称 *<input required {...field("role")} placeholder="例如：后端开发工程师" /></label><label>当前阶段<select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value, rejection_stage: e.target.value === "拒绝" ? form.rejection_stage : "" })}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></label>{form.status === "拒绝" && <label>拒绝阶段 *<select required {...field("rejection_stage")}><option value="">请选择</option>{rejectionStages.map((stage) => <option key={stage}>{stage}</option>)}</select></label>}<label>优先级<select {...field("priority")}><option>高</option><option>中</option><option>低</option></select></label><label>工作地点<input {...field("location")} placeholder="北京 / 上海 / 深圳" /></label><label>投递日期<input type="date" {...field("applied_at")} /></label><label>投递渠道<input {...field("channel")} placeholder="官网 / 内推 / Boss" /></label><label>简历版本<input {...field("resume_version")} placeholder="例如：后端-v3" /></label><label className="full">网申或 JD 链接<input type="url" {...field("apply_url")} placeholder="https://" /></label><label>薪资信息<input {...field("salary")} placeholder="选填" /></label><label>内推人 / 联系方式<input {...field("referral")} placeholder="选填" /></label><label className="full">岗位 JD<textarea rows={3} {...field("jd")} /></label><label className="full">备注<textarea rows={3} {...field("notes")} placeholder="业务方向、准备重点、沟通记录…" /></label></div><div className="modal-actions">{value && <button type="button" className="danger" onClick={remove}>删除记录</button>}<span /><button type="button" className="secondary compact" onClick={onClose}>取消</button><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存投递"}</button></div></form></Modal>;
+  return <Modal title={value ? "编辑投递" : "新增投递"} subtitle="先记下关键信息，其余内容可以随时补充。" onClose={onClose}>
+    <form onSubmit={submit}>
+      <div className="form-grid">
+        <label>公司名称 *<input required autoFocus {...field("company")} placeholder="例如：字节跳动" /></label>
+        <label>岗位名称 *<input required {...field("role")} placeholder="例如：后端开发工程师" /></label>
+        <label>当前阶段<select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value, rejection_stage: e.target.value === "拒绝" ? form.rejection_stage : "" })}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></label>
+        {form.status === "拒绝" && <label>拒绝阶段 *<select required {...field("rejection_stage")}><option value="">请选择</option>{rejectionStages.map((stage) => <option key={stage}>{stage}</option>)}</select></label>}
+        <label>优先级<select {...field("priority")}><option>高</option><option>中</option><option>低</option></select></label>
+        <label>工作地点<input {...field("location")} placeholder="北京 / 上海 / 深圳" /></label>
+        <label>投递日期<input type="date" {...field("applied_at")} /></label>
+        <label>投递渠道<input {...field("channel")} placeholder="官网 / 内推 / Boss" /></label>
+        <label>简历版本<input {...field("resume_version")} placeholder="例如：后端-v3" /></label>
+        <label className="full">网申或 JD 链接<div className="url-field-row"><input type="text" inputMode="url" {...field("apply_url")} placeholder="https://" />{directUrl && <a className="url-open-action" href={directUrl} target="_blank" rel="noopener noreferrer">↗ 一键直达</a>}</div></label>
+        <label>薪资信息<input {...field("salary")} placeholder="选填" /></label>
+        <label>内推人 / 联系方式<input {...field("referral")} placeholder="选填" /></label>
+        <label className="full">岗位 JD<textarea rows={3} {...field("jd")} /></label>
+        <label className="full">备注<textarea rows={3} {...field("notes")} placeholder="业务方向、准备重点、沟通记录…" /></label>
+      </div>
+      <div className="modal-actions">{value && <button type="button" className="danger" onClick={remove}>删除记录</button>}<span /><button type="button" className="secondary compact" onClick={onClose}>取消</button><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存投递"}</button></div>
+    </form>
+  </Modal>;
 }
 
 function SessionEditor({ value, applications, sessions, initialApplication, onClose, onSaved, onRefresh, notify }: any) {
