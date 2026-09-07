@@ -39,6 +39,10 @@ function formatDate(value: string, withTime = true) {
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", ...(withTime ? { hour: "2-digit", minute: "2-digit" } : {}) }).format(date);
 }
+function todayLocalDate() {
+  const date = new Date();
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
 function todayGreeting() { const hour = new Date().getHours(); return hour < 11 ? "早上好" : hour < 18 ? "下午好" : "晚上好"; }
 function displayStatus(app: Application) { return app.status === "拒绝" && app.rejection_stage ? `拒绝 · ${app.rejection_stage}` : app.status; }
 function externalUrl(value: unknown) {
@@ -150,10 +154,11 @@ export default function Home() {
   function newSession(applicationId = "") { setPrefillApp(applicationId); setSessionEditor("new"); }
   async function updateStatus(app: Application, status: string, rejectionStage?: string) {
     const payload: Record<string, string> = { status };
+    if (status === "已投递") payload.applied_at = todayLocalDate();
     if (status !== "拒绝" || rejectionStage !== undefined) payload.rejection_stage = status === "拒绝" ? rejectionStage || "" : "";
     await request(`/applications/${app.id}`, { method: "PATCH", body: JSON.stringify(payload) });
     await load();
-    notify(`已更新为“${status === "拒绝" && rejectionStage ? `拒绝 · ${rejectionStage}` : status}”`);
+    notify(`已更新为“${status === "拒绝" && rejectionStage ? `拒绝 · ${rejectionStage}` : status}”${status === "已投递" ? "，投递日期已记为今天" : ""}`);
   }
   async function deleteApplication(app: Application) {
     if (!confirm(`确定将“${app.company} · ${app.role}”移入回收站吗？30天内可以恢复。`)) return;
@@ -469,7 +474,7 @@ function ApplicationEditor({ value, onClose, onSaved, onDeleted }: any) {
       <div className="form-grid">
         <label>公司名称 *<input required autoFocus {...field("company")} placeholder="例如：字节跳动" /></label>
         <label>岗位名称 *<input required {...field("role")} placeholder="例如：后端开发工程师" /></label>
-        <label>当前阶段<select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value, rejection_stage: e.target.value === "拒绝" ? form.rejection_stage : "" })}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></label>
+        <label>当前阶段<select value={form.status} onChange={(e) => { const status = e.target.value; setForm({ ...form, status, applied_at: status === "已投递" ? todayLocalDate() : form.applied_at, rejection_stage: status === "拒绝" ? form.rejection_stage : "" }); }}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></label>
         {form.status === "拒绝" && <label>拒绝阶段 *<select required {...field("rejection_stage")}><option value="">请选择</option>{rejectionStages.map((stage) => <option key={stage}>{stage}</option>)}</select></label>}
         <label>优先级<select {...field("priority")}><option>高</option><option>中</option><option>低</option></select></label>
         <label>工作地点<input {...field("location")} placeholder="北京 / 上海 / 深圳" /></label>

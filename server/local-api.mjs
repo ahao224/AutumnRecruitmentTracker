@@ -148,6 +148,10 @@ const sessionColumns = ["application_id", "type", "round", "scheduled_at", "dura
 const scheduleColumns = ["application_id", "title", "event_type", "scheduled_at", "location", "reminder", "notes", "completed"];
 
 function now() { return new Date().toISOString(); }
+function todayLocalDate() {
+  const date = new Date();
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
 function clean(value, fallback = "") { return typeof value === "string" ? value.trim() : fallback; }
 function json(res, status, body, headers = {}) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...headers });
@@ -459,11 +463,12 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       if (!clean(body.company) || !clean(body.role)) return json(res, 400, { error: "公司和岗位不能为空" });
       const status = clean(body.status, "准备投递");
+      const appliedAt = status === "已投递" ? clean(body.applied_at) || todayLocalDate() : clean(body.applied_at);
       const rejectionStage = status === "拒绝" && rejectionStages.has(clean(body.rejection_stage)) ? clean(body.rejection_stage) : "";
       const id = randomUUID();
       const stamp = now();
       db.prepare(`INSERT INTO applications (id,${applicationColumns.join(",")},created_at,updated_at) VALUES (${["?", ...applicationColumns.map(() => "?"), "?", "?"].join(",")})`)
-        .run(id, ...applicationColumns.map((key) => key === "priority" ? clean(body[key], "中") : key === "status" ? status : key === "rejection_stage" ? rejectionStage : clean(body[key])), stamp, stamp);
+        .run(id, ...applicationColumns.map((key) => key === "priority" ? clean(body[key], "中") : key === "status" ? status : key === "rejection_stage" ? rejectionStage : key === "applied_at" ? appliedAt : clean(body[key])), stamp, stamp);
       return json(res, 201, { id });
     }
     const appMatch = pathname.match(/^\/api\/applications\/([^/]+)$/);
@@ -471,6 +476,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       if (Object.hasOwn(body, "status")) {
         const status = clean(body.status);
+        if (status === "已投递" && !Object.hasOwn(body, "applied_at")) body.applied_at = todayLocalDate();
         if (status !== "拒绝") body.rejection_stage = "";
         else if (!Object.hasOwn(body, "rejection_stage")) body.rejection_stage = "";
       }
