@@ -7,7 +7,7 @@
 <p align="center">一款本地优先的秋招投递、笔试、面试、日程与简历管理网页工具。</p>
 
 <p align="center">
-  <img alt="版本" src="https://img.shields.io/badge/version-1.0.6-356DF3" />
+  <img alt="版本" src="https://img.shields.io/badge/version-1.1.0-356DF3" />
   <img alt="运行方式" src="https://img.shields.io/badge/runtime-local%20web-18A0FB" />
   <img alt="数据存储" src="https://img.shields.io/badge/storage-local%20SQLite-18A77B" />
   <img alt="Node.js" src="https://img.shields.io/badge/Node.js-22.x-43853D" />
@@ -31,6 +31,13 @@
 - 投递表格可随时显示或隐藏薪资列，并记住上次选择。
 - 状态为“拒绝”时，可选择初筛挂、笔试挂、测评挂、一面挂、二面挂或三面挂。
 - 支持搜索、筛选、编辑、删除，以及展开查看岗位的完整招聘流程。
+- 支持批量检查网申或 JD 链接，识别明确失效、招聘已关闭和需要人工复核的页面。
+
+### 回收站
+
+- 删除的投递会从总览、投递管理、招聘流程和日程中隐藏，并在回收站保留 30 天。
+- 回收站支持完整恢复，也可以手动永久删除或一键清空。
+- 超过 30 天的记录会自动永久删除；关联招聘流程、题目和附件随记录一并处理。
 
 ### 笔试与面试复盘
 

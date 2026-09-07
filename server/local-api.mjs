@@ -1,6 +1,8 @@
 import http from "node:http";
-import { mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
+import os from "node:os";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
@@ -35,6 +37,10 @@ db.exec(`
     referral TEXT NOT NULL DEFAULT '',
     resume_version TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
+    deleted_at TEXT NOT NULL DEFAULT '',
+    link_check_status TEXT NOT NULL DEFAULT '',
+    link_check_message TEXT NOT NULL DEFAULT '',
+    link_checked_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )
@@ -42,6 +48,14 @@ db.exec(`
 const applicationSchema = db.prepare("PRAGMA table_info(applications)").all();
 if (!applicationSchema.some((column) => column.name === "rejection_stage")) {
   db.exec("ALTER TABLE applications ADD COLUMN rejection_stage TEXT NOT NULL DEFAULT ''");
+}
+for (const [column, definition] of [
+  ["deleted_at", "TEXT NOT NULL DEFAULT ''"],
+  ["link_check_status", "TEXT NOT NULL DEFAULT ''"],
+  ["link_check_message", "TEXT NOT NULL DEFAULT ''"],
+  ["link_checked_at", "TEXT NOT NULL DEFAULT ''"],
+]) {
+  if (!applicationSchema.some((item) => item.name === column)) db.exec("ALTER TABLE applications ADD COLUMN " + column + " " + definition);
 }
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
@@ -121,6 +135,7 @@ db.exec(`
   )
 `);
 db.exec("CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_applications_deleted_at ON applications(deleted_at)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_application_date ON sessions(application_id, scheduled_at)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_questions_session_order ON questions(session_id, sort_order)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_schedule_events_date ON schedule_events(scheduled_at)");
@@ -128,6 +143,7 @@ db.exec("PRAGMA optimize");
 
 const rejectionStages = new Set(["初筛挂", "笔试挂", "测评挂", "一面挂", "二面挂", "三面挂"]);
 const applicationColumns = ["company", "role", "location", "channel", "apply_url", "applied_at", "status", "rejection_stage", "priority", "salary", "jd", "referral", "resume_version", "notes"];
+const applicationStorageColumns = [...applicationColumns, "deleted_at", "link_check_status", "link_check_message", "link_checked_at"];
 const sessionColumns = ["application_id", "type", "round", "scheduled_at", "duration", "format", "location", "interviewer", "result", "notification_date", "overall_notes", "improvements", "rating"];
 const scheduleColumns = ["application_id", "title", "event_type", "scheduled_at", "location", "reminder", "notes", "completed"];
 
@@ -158,26 +174,202 @@ async function readJson(req) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 function rows(statement, ...params) { return statement.all(...params); }
+const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const closedLinkPhrases = [
+  "职位已关闭", "该职位已关闭", "职位已下线", "该职位已下线", "职位已失效", "该职位已失效",
+  "岗位已关闭", "该岗位已关闭", "岗位已下线", "该岗位已下线", "岗位不存在", "职位不存在",
+  "招聘已结束", "已结束招聘", "已停止招聘", "停止招聘", "投递已结束", "申请已截止", "职位已过期",
+  "job has expired", "job is no longer available", "position has been closed", "position is no longer available",
+];
+const browserChallengePhrases = [
+  "安全验证", "请完成验证", "验证码", "访问受限", "请求被拦截", "操作过于频繁",
+  "无法访问此网站", "无法访问此网页", "您的连接不是私密连接", "err_name_not_resolved",
+  "this site can't be reached", "this site can’t be reached", "access denied", "verify you are human",
+  "checking your browser", "too many requests", "captcha",
+];
+const browserExecutable = [
+  process.env.AUTUMN_BROWSER_PATH,
+  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+].find((candidate) => candidate && existsSync(candidate));
+
+function normalizedWebUrl(value) {
+  const raw = clean(value);
+  if (!raw) return "";
+  const candidate = /^[a-z][a-z\d+.-]*:/i.test(raw) ? raw : "https://" + raw;
+  try {
+    const parsed = new URL(candidate);
+    if (!["http:", "https:"].includes(parsed.protocol)) return "";
+    if (["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(parsed.hostname)) return "";
+    return parsed.href;
+  } catch { return ""; }
+}
+
+async function responseSnippet(response, limit = 180000) {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (text.length < limit) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return text.slice(0, limit).toLowerCase();
+}
+
+async function inspectApplicationLink(application) {
+  const target = normalizedWebUrl(application.apply_url);
+  if (!target) return { id: application.id, company: application.company, role: application.role, url: application.apply_url, status: "invalid", label: "链接无效", message: "链接格式无法识别" };
+  try {
+    const response = await fetch(target, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(8000),
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36" },
+    });
+    const base = { id: application.id, company: application.company, role: application.role, url: target, http_status: response.status, final_url: response.url || target };
+    if ([404, 410].includes(response.status)) return { ...base, status: "invalid", label: "链接失效", message: "网页返回 " + response.status };
+    if (!response.ok) return { ...base, status: "review", label: "需要复核", message: "网页返回 " + response.status + "，可能需要登录或暂时限制访问" };
+    const contentType = response.headers.get("content-type") || "";
+    if (/text|html|json|javascript/i.test(contentType)) {
+      const snippet = await responseSnippet(response);
+      const phrase = closedLinkPhrases.find((item) => snippet.includes(item));
+      if (phrase) return { ...base, status: "closed", label: "招聘已关闭", message: "页面包含“" + phrase + "”" };
+    }
+    return { ...base, status: "valid", label: "正常", message: "链接可以访问" };
+  } catch (error) {
+    const message = error && error.name === "TimeoutError" ? "访问超时" : "无法访问，可能是网络限制或网站拦截";
+    return { id: application.id, company: application.company, role: application.role, url: target, status: "review", label: "需要复核", message };
+  }
+}
+
+function browserPageText(html) {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+async function inspectApplicationLinkInBrowser(application) {
+  const target = normalizedWebUrl(application.apply_url);
+  const base = { id: application.id, company: application.company, role: application.role, url: target };
+  if (!target || !browserExecutable) {
+    return { ...base, status: "review", label: "需要复核", message: browserExecutable ? "链接格式无法识别" : "自动检查受限，且未找到可用的 Chrome 或 Edge" };
+  }
+
+  const profileDir = mkdtempSync(path.join(os.tmpdir(), "autumn-link-check-"));
+  try {
+    const result = await new Promise((resolve) => {
+      const child = spawn(browserExecutable, [
+        "--headless=new",
+        "--disable-gpu",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--hide-scrollbars",
+        "--mute-audio",
+        `--user-data-dir=${profileDir}`,
+        "--virtual-time-budget=10000",
+        "--dump-dom",
+        target,
+      ], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+      let html = "";
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      child.stdout.on("data", (chunk) => {
+        if (html.length < 400000) html += chunk.toString("utf8");
+      });
+      child.on("error", () => finish({ ok: false, timeout: false, html }));
+      child.on("close", (code) => finish({ ok: code === 0, timeout: false, html }));
+      const timer = setTimeout(() => {
+        child.kill();
+        finish({ ok: false, timeout: true, html });
+      }, 18000);
+    });
+
+    const text = browserPageText(result.html || "");
+    const closedPhrase = closedLinkPhrases.find((phrase) => text.includes(phrase));
+    if (closedPhrase) return { ...base, status: "closed", label: "招聘已关闭", message: `真实浏览器页面包含“${closedPhrase}”`, inspection_method: "browser" };
+    const challengePhrase = browserChallengePhrases.find((phrase) => text.includes(phrase));
+    if (challengePhrase) return { ...base, status: "review", label: "需要复核", message: "网站要求安全验证，请手动打开确认", inspection_method: "browser" };
+    if (result.ok && text.length >= 40) return { ...base, status: "valid", label: "正常", message: "已通过真实浏览器成功打开", inspection_method: "browser" };
+    return { ...base, status: "review", label: "需要复核", message: result.timeout ? "真实浏览器复查超时，请手动打开确认" : "真实浏览器未能完整加载，请手动打开确认", inspection_method: "browser" };
+  } finally {
+    try { rmSync(profileDir, { recursive: true, force: true }); }
+    catch { /* Chrome may hold its temporary profile briefly while shutting down. */ }
+  }
+}
+
+function permanentlyDeleteApplications(ids) {
+  const uniqueIds = [...new Set(ids.filter((id) => typeof id === "string" && id))].slice(0, 500);
+  if (!uniqueIds.length) return 0;
+  const placeholders = uniqueIds.map(() => "?").join(",");
+  const files = rows(db.prepare("SELECT t.stored_name FROM attachments t JOIN sessions s ON s.id=t.session_id JOIN applications a ON a.id=s.application_id WHERE a.deleted_at<>'' AND a.id IN (" + placeholders + ")"), ...uniqueIds);
+  db.exec("BEGIN");
+  let changes = 0;
+  try {
+    db.prepare("DELETE FROM schedule_events WHERE application_id IN (" + placeholders + ")").run(...uniqueIds);
+    changes = db.prepare("DELETE FROM applications WHERE deleted_at<>'' AND id IN (" + placeholders + ")").run(...uniqueIds).changes;
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  files.forEach((file) => {
+    const target = path.join(ATTACHMENTS_DIR, file.stored_name);
+    if (existsSync(target)) unlinkSync(target);
+  });
+  return changes;
+}
+
+function purgeExpiredTrash() {
+  const cutoff = new Date(Date.now() - TRASH_RETENTION_MS).toISOString();
+  const expired = rows(db.prepare("SELECT id FROM applications WHERE deleted_at<>'' AND deleted_at<=?"), cutoff).map((item) => item.id);
+  return permanentlyDeleteApplications(expired);
+}
+
 function getState() {
+  purgeExpiredTrash();
   const applications = rows(db.prepare(`
     SELECT a.*,
       (SELECT COUNT(*) FROM sessions s WHERE s.application_id = a.id) AS session_count,
       (SELECT MIN(s.scheduled_at) FROM sessions s WHERE s.application_id = a.id AND s.scheduled_at >= datetime('now','localtime')) AS next_session_at
-    FROM applications a ORDER BY a.updated_at DESC
+    FROM applications a WHERE a.deleted_at='' ORDER BY a.updated_at DESC
   `));
   const sessions = rows(db.prepare(`
     SELECT s.*, a.company, a.role,
       (SELECT COUNT(*) FROM questions q WHERE q.session_id = s.id) AS question_count,
       (SELECT COUNT(*) FROM attachments t WHERE t.session_id = s.id) AS attachment_count
-    FROM sessions s JOIN applications a ON a.id = s.application_id
+    FROM sessions s JOIN applications a ON a.id = s.application_id AND a.deleted_at=''
     ORDER BY CASE WHEN s.scheduled_at = '' THEN 1 ELSE 0 END, s.scheduled_at DESC
   `));
   const resumes = rows(db.prepare("SELECT id,title,version,target_role,notes,original_name,mime_type,size,created_at,updated_at FROM resumes ORDER BY updated_at DESC"));
-  const schedules = rows(db.prepare("SELECT e.*,a.company,a.role FROM schedule_events e LEFT JOIN applications a ON a.id=e.application_id ORDER BY e.scheduled_at DESC"));
-  return { applications, sessions, resumes, schedules, storage: { root: DATA_ROOT, database: dbPath } };
+  const schedules = rows(db.prepare("SELECT e.*,a.company,a.role FROM schedule_events e LEFT JOIN applications a ON a.id=e.application_id WHERE e.application_id IS NULL OR a.deleted_at='' ORDER BY e.scheduled_at DESC"));
+  const trash = rows(db.prepare("SELECT a.*, (SELECT COUNT(*) FROM sessions s WHERE s.application_id=a.id) AS session_count FROM applications a WHERE a.deleted_at<>'' ORDER BY a.deleted_at DESC"));
+  return { applications, sessions, resumes, schedules, trash, trash_retention_days: 30, storage: { root: DATA_ROOT, database: dbPath } };
 }
 function getSession(id) {
-  const session = db.prepare("SELECT s.*, a.company, a.role FROM sessions s JOIN applications a ON a.id=s.application_id WHERE s.id=?").get(id);
+  const session = db.prepare("SELECT s.*, a.company, a.role FROM sessions s JOIN applications a ON a.id=s.application_id AND a.deleted_at='' WHERE s.id=?").get(id);
   if (!session) return null;
   return {
     ...session,
@@ -203,6 +395,65 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && pathname === "/api/health") return json(res, 200, { ok: true, database: dbPath });
     if (req.method === "GET" && pathname === "/api/state") return json(res, 200, getState());
+
+    if (req.method === "POST" && pathname === "/api/applications/check-links") {
+      const applications = rows(db.prepare("SELECT id,company,role,apply_url FROM applications WHERE deleted_at='' AND apply_url<>'' ORDER BY updated_at DESC"));
+      const results = [];
+      for (let index = 0; index < applications.length; index += 8) {
+        results.push(...await Promise.all(applications.slice(index, index + 8).map(inspectApplicationLink)));
+      }
+      const applicationsById = new Map(applications.map((application) => [application.id, application]));
+      const reviewIndexes = results.map((item, index) => item.status === "review" ? index : -1).filter((index) => index >= 0);
+      for (let index = 0; index < reviewIndexes.length; index += 3) {
+        const indexes = reviewIndexes.slice(index, index + 3);
+        const checked = await Promise.all(indexes.map((resultIndex) => inspectApplicationLinkInBrowser(applicationsById.get(results[resultIndex].id))));
+        checked.forEach((item, checkedIndex) => { results[indexes[checkedIndex]] = item; });
+      }
+      const stamp = now();
+      const update = db.prepare("UPDATE applications SET link_check_status=?,link_check_message=?,link_checked_at=? WHERE id=? AND deleted_at=''");
+      results.forEach((item) => update.run(item.status, item.message, stamp, item.id));
+      return json(res, 200, {
+        checked: results.length,
+        results,
+        summary: {
+          valid: results.filter((item) => item.status === "valid").length,
+          invalid: results.filter((item) => item.status === "invalid").length,
+          closed: results.filter((item) => item.status === "closed").length,
+          review: results.filter((item) => item.status === "review").length,
+        },
+      });
+    }
+
+    const linkCheckValidMatch = pathname.match(/^\/api\/applications\/([^/]+)\/link-check-valid$/);
+    if (req.method === "POST" && linkCheckValidMatch) {
+      const stamp = now();
+      const result = db.prepare("UPDATE applications SET link_check_status='valid',link_check_message='已人工确认链接正常',link_checked_at=? WHERE id=? AND deleted_at=''").run(stamp, linkCheckValidMatch[1]);
+      return json(res, result.changes ? 200 : 404, result.changes ? { ok: true, status: "valid", label: "正常", message: "已人工确认链接正常", checked_at: stamp } : { error: "投递记录不存在" });
+    }
+
+    if (req.method === "POST" && pathname === "/api/applications/trash") {
+      const body = await readJson(req);
+      const ids = [...new Set((Array.isArray(body.ids) ? body.ids : []).filter((id) => typeof id === "string" && id))].slice(0, 500);
+      if (!ids.length) return json(res, 400, { error: "请选择要移入回收站的投递记录" });
+      const placeholders = ids.map(() => "?").join(",");
+      const result = db.prepare("UPDATE applications SET deleted_at=?,updated_at=? WHERE deleted_at='' AND id IN (" + placeholders + ")").run(now(), now(), ...ids);
+      return json(res, 200, { ok: true, moved: result.changes });
+    }
+
+    const trashMatch = pathname.match(/^\/api\/trash\/([^/]+)$/);
+    if (trashMatch && req.method === "POST") {
+      const result = db.prepare("UPDATE applications SET deleted_at='',updated_at=? WHERE id=? AND deleted_at<>''").run(now(), trashMatch[1]);
+      return json(res, result.changes ? 200 : 404, { ok: Boolean(result.changes) });
+    }
+    if (trashMatch && req.method === "DELETE") {
+      const changes = permanentlyDeleteApplications([trashMatch[1]]);
+      return json(res, changes ? 200 : 404, { ok: Boolean(changes) });
+    }
+    if (pathname === "/api/trash" && req.method === "DELETE") {
+      const ids = rows(db.prepare("SELECT id FROM applications WHERE deleted_at<>''")).map((item) => item.id);
+      const changes = permanentlyDeleteApplications(ids);
+      return json(res, 200, { ok: true, deleted: changes });
+    }
 
     if (req.method === "POST" && pathname === "/api/applications") {
       const body = await readJson(req);
@@ -234,9 +485,8 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
     if (appMatch && req.method === "DELETE") {
-      const files = rows(db.prepare("SELECT stored_name FROM attachments WHERE session_id IN (SELECT id FROM sessions WHERE application_id=?)"), appMatch[1]);
-      const result = db.prepare("DELETE FROM applications WHERE id=?").run(appMatch[1]);
-      files.forEach((file) => { const target = path.join(ATTACHMENTS_DIR, file.stored_name); if (existsSync(target)) unlinkSync(target); });
+      const stamp = now();
+      const result = db.prepare("UPDATE applications SET deleted_at=?,updated_at=? WHERE id=? AND deleted_at=''").run(stamp, stamp, appMatch[1]);
       return json(res, result.changes ? 200 : 404, { ok: Boolean(result.changes) });
     }
 
@@ -383,8 +633,8 @@ const server = http.createServer(async (req, res) => {
       if (!Array.isArray(body.applications) || !Array.isArray(body.sessions)) return json(res, 400, { error: "不是有效的秋招手账备份" });
       db.exec("BEGIN");
       try {
-        const insertApp = db.prepare(`INSERT OR REPLACE INTO applications (id,${applicationColumns.join(",")},created_at,updated_at) VALUES (${["?", ...applicationColumns.map(() => "?"), "?", "?"].join(",")})`);
-        body.applications.forEach((item) => insertApp.run(item.id || randomUUID(), ...applicationColumns.map((key) => key === "rejection_stage" ? (item.status === "拒绝" && rejectionStages.has(clean(item[key])) ? clean(item[key]) : "") : clean(item[key])), item.created_at || now(), item.updated_at || now()));
+        const insertApp = db.prepare("INSERT OR REPLACE INTO applications (id," + applicationStorageColumns.join(",") + ",created_at,updated_at) VALUES (" + ["?", ...applicationStorageColumns.map(() => "?"), "?", "?"].join(",") + ")");
+        body.applications.forEach((item) => insertApp.run(item.id || randomUUID(), ...applicationStorageColumns.map((key) => key === "rejection_stage" ? (item.status === "拒绝" && rejectionStages.has(clean(item[key])) ? clean(item[key]) : "") : key === "priority" ? clean(item[key], "中") : clean(item[key])), item.created_at || now(), item.updated_at || now()));
         const insertSession = db.prepare(`INSERT OR REPLACE INTO sessions (id,${sessionColumns.join(",")},created_at,updated_at) VALUES (${["?", ...sessionColumns.map(() => "?"), "?", "?"].join(",")})`);
         body.sessions.forEach((item) => insertSession.run(item.id || randomUUID(), ...sessionColumns.map((key) => ["duration", "rating"].includes(key) ? Number(item[key] || 0) : clean(item[key])), item.created_at || now(), item.updated_at || now()));
         const insertQuestion = db.prepare("INSERT OR REPLACE INTO questions (id,session_id,content,answer,reference_answer,category,needs_review,sort_order) VALUES (?,?,?,?,?,?,?,?)");

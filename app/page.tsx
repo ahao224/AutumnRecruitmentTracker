@@ -12,7 +12,7 @@ const interviewRounds = ["技术一面", "技术二面", "技术三面", "HR面"
 const examRounds = ["在线笔试", "线下笔试", "编程测评", "性格测评"];
 const navItems = [
   ["overview", "⌂", "总览"], ["board", "▦", "投递总览"], ["applications", "▤", "投递管理"], ["sessions", "✎", "招聘流程"],
-  ["calendar", "□", "日程"], ["insights", "↗", "数据复盘"], ["resumes", "◈", "我的简历"], ["data", "◇", "数据与备份"],
+  ["calendar", "□", "日程"], ["insights", "↗", "数据复盘"], ["resumes", "◈", "我的简历"], ["trash", "♲", "回收站"], ["data", "◇", "数据与备份"],
 ] as const;
 
 type Application = Record<string, string | number> & { id: string; company: string; role: string; status: string; rejection_stage: string; priority: string };
@@ -21,6 +21,7 @@ type Question = { id?: string; content: string; answer: string; reference_answer
 type SessionDetail = Session & { questions: Question[]; attachments: { id: string; original_name: string; mime_type: string; size: number }[] };
 type Resume = { id: string; title: string; version: string; target_role: string; notes: string; original_name: string; mime_type: string; size: number; created_at: string };
 type ScheduleEvent = { id: string; application_id: string; title: string; event_type: string; scheduled_at: string; location: string; reminder: string; notes: string; completed: number; company?: string; role?: string };
+type LinkCheckResult = { id: string; company: string; role: string; url: string; status: "valid" | "invalid" | "closed" | "review"; label: string; message: string; http_status?: number; inspection_method?: "browser" };
 
 const emptyApp = { company: "", role: "", location: "", channel: "", apply_url: "", applied_at: "", status: "准备投递", rejection_stage: "", priority: "中", salary: "", jd: "", referral: "", resume_version: "", notes: "" };
 const emptySession = { application_id: "", type: "面试", round: "技术一面", scheduled_at: "", duration: "60", format: "视频", location: "", interviewer: "", result: "待进行", notification_date: "", overall_notes: "", improvements: "", rating: "0", questions: [] as Question[] };
@@ -55,6 +56,7 @@ export default function Home() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [schedules, setSchedules] = useState<ScheduleEvent[]>([]);
+  const [trash, setTrash] = useState<Application[]>([]);
   const [storage, setStorage] = useState({ root: "D:\\222", database: "" });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -66,9 +68,11 @@ export default function Home() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("全部");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [checkingLinks, setCheckingLinks] = useState(false);
+  const [linkCheckResults, setLinkCheckResults] = useState<LinkCheckResult[] | null>(null);
 
   async function load() {
-    try { const data = await request("/state"); setApplications(data.applications); setSessions(data.sessions); setResumes(data.resumes || []); setSchedules(data.schedules || []); setStorage(data.storage); setError(""); }
+    try { const data = await request("/state"); setApplications(data.applications); setSessions(data.sessions); setResumes(data.resumes || []); setSchedules(data.schedules || []); setTrash(data.trash || []); setStorage(data.storage); setError(""); }
     catch (e) { setError(e instanceof Error ? e.message : "无法连接数据服务"); }
     finally { setLoading(false); }
   }
@@ -88,6 +92,51 @@ export default function Home() {
     setSidebarCollapsed(next); window.localStorage.setItem("autumn-sidebar-collapsed", String(next));
   }
   function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 2600); }
+  async function checkLinks() {
+    if (checkingLinks) return;
+    setCheckingLinks(true);
+    try {
+      const data = await request("/applications/check-links", { method: "POST", body: "{}" });
+      setLinkCheckResults(data.results || []);
+      await load();
+      notify(data.checked ? `已检查 ${data.checked} 条链接` : "暂无可检查的链接");
+    } catch (error) { notify(error instanceof Error ? error.message : "链接检查失败"); }
+    finally { setCheckingLinks(false); }
+  }
+  async function trashCheckedLinks(ids: string[]) {
+    if (!ids.length) return;
+    if (!confirm(`确定将选中的 ${ids.length} 条投递移入回收站吗？30天内可以恢复。`)) return;
+    try {
+      const result = await request("/applications/trash", { method: "POST", body: JSON.stringify({ ids }) });
+      setLinkCheckResults(null); await load(); notify(`已将 ${result.moved} 条投递移入回收站`);
+    } catch (error) { notify(error instanceof Error ? error.message : "清理失败"); }
+  }
+  async function markCheckedLinkValid(id: string) {
+    try {
+      const result = await request(`/applications/${id}/link-check-valid`, { method: "POST", body: "{}" });
+      setLinkCheckResults((current) => current?.map((item) => item.id === id ? { ...item, status: "valid", label: result.label, message: result.message } : item) || null);
+      await load();
+      notify("已标记为正常链接");
+      return true;
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "标记失败");
+      return false;
+    }
+  }
+  async function restoreApplication(app: Application) {
+    try { await request(`/trash/${app.id}`, { method: "POST", body: "{}" }); await load(); notify("投递记录已恢复"); }
+    catch (error) { notify(error instanceof Error ? error.message : "恢复失败"); }
+  }
+  async function permanentlyDeleteApplication(app: Application) {
+    if (!confirm(`永久删除“${app.company} · ${app.role}”吗？招聘流程、复盘和附件将无法恢复。`)) return;
+    try { await request(`/trash/${app.id}`, { method: "DELETE" }); await load(); notify("已永久删除"); }
+    catch (error) { notify(error instanceof Error ? error.message : "永久删除失败"); }
+  }
+  async function emptyTrash() {
+    if (!trash.length || !confirm(`清空回收站中的 ${trash.length} 条记录吗？此操作无法恢复。`)) return;
+    try { await request("/trash", { method: "DELETE" }); await load(); notify("回收站已清空"); }
+    catch (error) { notify(error instanceof Error ? error.message : "清空失败"); }
+  }
 
   const upcoming = useMemo(() => [
     ...sessions.map((s) => ({ ...s, source: "session", agendaTitle: `${s.company} · ${s.round || s.type}` })),
@@ -107,8 +156,8 @@ export default function Home() {
     notify(`已更新为“${status === "拒绝" && rejectionStage ? `拒绝 · ${rejectionStage}` : status}”`);
   }
   async function deleteApplication(app: Application) {
-    if (!confirm(`确定删除“${app.company} · ${app.role}”吗？该岗位下的笔面试记录和附件也会一起删除。`)) return;
-    try { await request(`/applications/${app.id}`, { method: "DELETE" }); await load(); notify("投递记录已删除"); }
+    if (!confirm(`确定将“${app.company} · ${app.role}”移入回收站吗？30天内可以恢复。`)) return;
+    try { await request(`/applications/${app.id}`, { method: "DELETE" }); await load(); notify("已移入回收站"); }
     catch (error) { notify(error instanceof Error ? error.message : "删除失败"); }
   }
   async function deleteSessionFromList(session: Session) {
@@ -121,7 +170,7 @@ export default function Home() {
     overview: [`${todayGreeting()}，今天继续向前。`, "把每一次投递和复盘，都变成下一次机会的底气。"],
     board: ["投递总览", "上百家企业，也能一眼看清每一份投递走到了哪里。"],
     applications: ["投递管理", "公司、岗位和进度都在这里。"], sessions: ["招聘流程", "按时间串起笔试与每一轮面试，结束后逐场复盘。"],
-    calendar: ["近期日程", "别错过笔试、面试和结果通知。"], insights: ["数据复盘", "看清投递转化，也看见自己的进步。"], resumes: ["我的简历库", "集中管理不同方向与版本的简历。"], data: ["数据与备份", "所有核心数据仅保存在你的电脑。"],
+    calendar: ["近期日程", "别错过笔试、面试和结果通知。"], insights: ["数据复盘", "看清投递转化，也看见自己的进步。"], resumes: ["我的简历库", "集中管理不同方向与版本的简历。"], trash: ["回收站", "删除的投递会保留30天，期间可以完整恢复。"], data: ["数据与备份", "所有核心数据仅保存在你的电脑。"],
   };
 
   return (
@@ -141,19 +190,21 @@ export default function Home() {
         {error && <div className="alert"><b>暂时无法读取本地数据</b><span>{error}。请关闭当前页面，然后从桌面重新打开“秋招手账”。</span><button onClick={load}>重新连接</button></div>}
         {loading ? <div className="loading">正在打开你的秋招手账…</div> : <>
           {view === "overview" && <Overview applications={applications} sessions={sessions} upcoming={upcoming} onAddApp={() => setAppEditor("new")} onAddSession={newSession} onAddSchedule={() => setScheduleEditor("new")} onOpenSession={openSession} onOpenSchedule={setScheduleEditor} onView={setView} />}
-          {view === "board" && <ApplicationBoard applications={applications} onEdit={setAppEditor} onAdd={() => setAppEditor("new")} />}
-          {view === "applications" && <ApplicationsView applications={filteredApps} sessions={sessions} search={search} setSearch={setSearch} filter={statusFilter} setFilter={setStatusFilter} onEdit={setAppEditor} onDelete={deleteApplication} onStatus={updateStatus} onSession={newSession} onOpenSession={openSession} onDeleteSession={deleteSessionFromList} />}
+          {view === "board" && <ApplicationBoard applications={applications} onEdit={setAppEditor} onAdd={() => setAppEditor("new")} onCheckLinks={checkLinks} checkingLinks={checkingLinks} />}
+          {view === "applications" && <ApplicationsView applications={filteredApps} sessions={sessions} search={search} setSearch={setSearch} filter={statusFilter} setFilter={setStatusFilter} onEdit={setAppEditor} onDelete={deleteApplication} onStatus={updateStatus} onSession={newSession} onOpenSession={openSession} onDeleteSession={deleteSessionFromList} onCheckLinks={checkLinks} checkingLinks={checkingLinks} />}
           {view === "sessions" && <SessionsView sessions={sessions} onOpen={openSession} onAdd={() => newSession()} />}
           {view === "calendar" && <CalendarView sessions={sessions} schedules={schedules} onOpenSession={openSession} onOpenSchedule={setScheduleEditor} onAdd={() => setScheduleEditor("new")} />}
           {view === "insights" && <InsightsView applications={applications} sessions={sessions} />}
           {view === "resumes" && <ResumeView resumes={resumes} onReload={load} notify={notify} />}
+          {view === "trash" && <TrashView applications={trash} onRestore={restoreApplication} onDelete={permanentlyDeleteApplication} onEmpty={emptyTrash} />}
           {view === "data" && <DataView storage={storage} onNotify={notify} onReload={load} />}
         </>}
       </section>
 
-      {appEditor && <ApplicationEditor value={appEditor === "new" ? null : appEditor} onClose={() => setAppEditor(null)} onSaved={async () => { setAppEditor(null); await load(); notify("投递记录已保存"); }} />}
+      {appEditor && <ApplicationEditor value={appEditor === "new" ? null : appEditor} onClose={() => setAppEditor(null)} onSaved={async () => { setAppEditor(null); await load(); notify("投递记录已保存"); }} onDeleted={async () => { setAppEditor(null); await load(); notify("已移入回收站"); }} />}
       {sessionEditor && <SessionEditor value={sessionEditor === "new" ? null : sessionEditor} applications={applications} sessions={sessions} initialApplication={prefillApp} onClose={() => setSessionEditor(null)} onSaved={async () => { setSessionEditor(null); await load(); notify("招聘流程已保存"); }} onRefresh={async (id) => setSessionEditor(await request(`/sessions/${id}`))} notify={notify} />}
       {scheduleEditor && <ScheduleEditor value={scheduleEditor === "new" ? null : scheduleEditor} applications={applications} onClose={() => setScheduleEditor(null)} onSaved={async () => { setScheduleEditor(null); await load(); notify("日程已保存"); }} />}
+      {linkCheckResults && <LinkCheckModal results={linkCheckResults} onClose={() => setLinkCheckResults(null)} onTrash={trashCheckedLinks} onMarkValid={markCheckedLinkValid} />}
       {toast && <div className="toast">✓ {toast}</div>}
     </main>
   );
@@ -185,7 +236,7 @@ function Overview({ applications, sessions, upcoming, onAddApp, onAddSession, on
   </>;
 }
 
-function ApplicationBoard({ applications, onEdit, onAdd }: { applications: Application[]; onEdit: (app: Application) => void; onAdd: () => void }) {
+function ApplicationBoard({ applications, onEdit, onAdd, onCheckLinks, checkingLinks }: { applications: Application[]; onEdit: (app: Application) => void; onAdd: () => void; onCheckLinks: () => void; checkingLinks: boolean }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("全部");
   const [priorityFilter, setPriorityFilter] = useState("全部优先级");
@@ -217,6 +268,7 @@ function ApplicationBoard({ applications, onEdit, onAdd }: { applications: Appli
       <label className="board-priority"><span>优先级</span><select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)}><option>全部优先级</option><option>高</option><option>中</option><option>低</option></select></label>
       <label className="board-sort"><span>排序</span><select value={sortBy} onChange={(event) => setSortBy(event.target.value)}><option>最近更新</option><option>公司名称</option><option>当前进度</option><option>优先级：高到低</option><option>优先级：低到高</option></select></label>
       <button className={`board-density ${compact ? "active" : ""}`} onClick={() => setCompact(!compact)} aria-pressed={compact}><i>▦</i>{compact ? "紧凑" : "舒展"}</button>
+      <button className="link-check-button" onClick={onCheckLinks} disabled={checkingLinks}>⌁ {checkingLinks ? "检查中…" : "一键检查链接"}</button>
       <span className="board-result">显示 <b>{visible.length}</b> / {applications.length}</span>
     </div>
     {visible.length ? <div className={`company-matrix ${compact ? "compact" : "comfortable"}`}>
@@ -229,7 +281,7 @@ function ApplicationBoard({ applications, onEdit, onAdd }: { applications: Appli
   </section>;
 }
 
-function ApplicationsView({ applications, sessions, search, setSearch, filter, setFilter, onEdit, onDelete, onStatus, onSession, onOpenSession, onDeleteSession }: any) {
+function ApplicationsView({ applications, sessions, search, setSearch, filter, setFilter, onEdit, onDelete, onStatus, onSession, onOpenSession, onDeleteSession, onCheckLinks, checkingLinks }: any) {
   const [expanded, setExpanded] = useState("");
   const [showSalary, setShowSalary] = useState(false);
   useEffect(() => { setShowSalary(window.localStorage.getItem("autumn-show-salary") === "true"); }, []);
@@ -244,7 +296,13 @@ function ApplicationsView({ applications, sessions, search, setSearch, filter, s
     return latest ? `${latest.round || latest.type}${latest.result && latest.result !== "待定" ? ` · ${latest.result}` : ""}` : app.status;
   }
   return <section className="workspace-panel">
-    <div className="toolbar"><label className="search">⌕<input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索公司、岗位或城市" /></label><select value={filter} onChange={(e) => setFilter(e.target.value)}><option>全部</option>{statuses.map((s) => <option key={s}>{s}</option>)}</select><button className={`salary-toggle ${showSalary ? "active" : ""}`} onClick={toggleSalary} aria-pressed={showSalary} aria-label={showSalary ? "隐藏薪资" : "显示薪资"}><i>￥</i>{showSalary ? "隐藏薪资" : "显示薪资"}</button><span>{applications.length} 条记录</span></div>
+    <div className="toolbar">
+      <label className="search">⌕<input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索公司、岗位或城市" /></label>
+      <select value={filter} onChange={(e) => setFilter(e.target.value)}><option>全部</option>{statuses.map((s) => <option key={s}>{s}</option>)}</select>
+      <button className={`salary-toggle ${showSalary ? "active" : ""}`} onClick={toggleSalary} aria-pressed={showSalary} aria-label={showSalary ? "隐藏薪资" : "显示薪资"}><i>￥</i>{showSalary ? "隐藏薪资" : "显示薪资"}</button>
+      <button className="link-check-button" onClick={onCheckLinks} disabled={checkingLinks}>⌁ {checkingLinks ? "检查中…" : "一键检查链接"}</button>
+      <span>{applications.length} 条记录</span>
+    </div>
     {applications.length ? <div className="table-wrap"><table className={`process-table ${showSalary ? "show-salary" : ""}`}><thead><tr><th>公司 / 岗位</th><th>当前进度</th><th>下一安排</th><th>当前状态</th><th>优先级</th>{showSalary && <th className="salary-column">薪资</th>}<th className="actions-column">操作</th></tr></thead><tbody>
       {applications.map((a: Application) => {
         const items = appSessions(a.id); const next = nextSession(items); const isOpen = expanded === a.id; const hasSubmitted = a.status !== "准备投递"; const directUrl = externalUrl(a.apply_url);
@@ -266,6 +324,64 @@ function ApplicationsView({ applications, sessions, search, setSearch, filter, s
         </Fragment>;
       })}
     </tbody></table></div> : <Empty title="没有符合条件的投递" text="换个筛选条件，或新增一条投递记录。" />}
+  </section>;
+}
+
+function LinkCheckModal({ results, onClose, onTrash, onMarkValid }: { results: LinkCheckResult[]; onClose: () => void; onTrash: (ids: string[]) => void; onMarkValid: (id: string) => Promise<boolean> }) {
+  const [selected, setSelected] = useState(() => results.filter((item) => item.status === "invalid" || item.status === "closed").map((item) => item.id));
+  const [marking, setMarking] = useState("");
+  const summary = {
+    valid: results.filter((item) => item.status === "valid").length,
+    invalid: results.filter((item) => item.status === "invalid").length,
+    closed: results.filter((item) => item.status === "closed").length,
+    review: results.filter((item) => item.status === "review").length,
+  };
+  function toggle(id: string) { setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]); }
+  async function markValid(id: string) {
+    setMarking(id);
+    const saved = await onMarkValid(id);
+    if (saved) setSelected((current) => current.filter((item) => item !== id));
+    setMarking("");
+  }
+  return <Modal wide title="链接检查结果" subtitle="先快速检查，受限网站会自动使用真实浏览器复查；只有明确失效或关闭的记录可以一键清理。" onClose={onClose}>
+    <div className="link-check-content">
+      <div className="link-check-summary">
+        <span className="check-valid">正常 <b>{summary.valid}</b></span>
+        <span className="check-invalid">失效 <b>{summary.invalid}</b></span>
+        <span className="check-closed">已关闭 <b>{summary.closed}</b></span>
+        <span className="check-review">需复核 <b>{summary.review}</b></span>
+      </div>
+      {results.length ? <div className="link-check-list">{results.map((item) => {
+        const canSelect = item.status === "invalid" || item.status === "closed";
+        return <div className={`link-check-row check-${item.status}`} key={item.id}>
+          <input type="checkbox" aria-label={`选择 ${item.company} ${item.role}`} checked={selected.includes(item.id)} disabled={!canSelect} onChange={() => toggle(item.id)} />
+          <div><strong>{item.company}</strong><span>{item.role}</span><small>{item.message}</small></div>
+          <em>{item.label}</em>
+          <div className="link-check-row-actions">
+            {externalUrl(item.url) && <a href={externalUrl(item.url)} target="_blank" rel="noopener noreferrer">打开链接 ↗</a>}
+            {item.status === "review" && <button type="button" disabled={marking === item.id} onClick={() => markValid(item.id)}>{marking === item.id ? "保存中…" : "标记正常"}</button>}
+          </div>
+        </div>;
+      })}</div> : <Empty title="暂无可检查的链接" text="填写网申或 JD 链接后，就可以在这里批量检查。" />}
+      <div className="link-check-actions"><span>已选择 {selected.length} 条，清理后将在回收站保留30天。</span><button className="secondary compact" onClick={onClose}>关闭</button><button className="trash-selected" disabled={!selected.length} onClick={() => onTrash(selected)}>移入回收站（{selected.length}）</button></div>
+    </div>
+  </Modal>;
+}
+
+function TrashView({ applications, onRestore, onDelete, onEmpty }: { applications: Application[]; onRestore: (app: Application) => void; onDelete: (app: Application) => void; onEmpty: () => void }) {
+  function daysLeft(value: unknown) {
+    const deletedAt = new Date(String(value || "")).getTime();
+    if (!Number.isFinite(deletedAt)) return 30;
+    return Math.max(0, Math.ceil((deletedAt + 30 * 24 * 60 * 60 * 1000 - Date.now()) / (24 * 60 * 60 * 1000)));
+  }
+  return <section className="trash-panel">
+    <div className="trash-toolbar"><div><b>{applications.length} 条已删除投递</b><span>到期后将自动永久删除</span></div>{Boolean(applications.length) && <button className="empty-trash-action" onClick={onEmpty}>清空回收站</button>}</div>
+    {applications.length ? <div className="trash-list">{applications.map((app) => <article className="trash-card" key={app.id}>
+      <div className="trash-mark">{app.company[0]}</div>
+      <div className="trash-main"><h3>{app.company}</h3><p>{app.role}{app.location ? ` · ${app.location}` : ""}</p><span>删除于 {formatDate(String(app.deleted_at))} · 剩余 {daysLeft(app.deleted_at)} 天</span>{Number(app.session_count || 0) > 0 && <small>包含 {app.session_count} 条招聘流程记录</small>}</div>
+      {externalUrl(app.apply_url) && <a href={externalUrl(app.apply_url)} target="_blank" rel="noopener noreferrer">原链接 ↗</a>}
+      <div className="trash-actions"><button onClick={() => onRestore(app)}>恢复</button><button className="permanent-delete" onClick={() => onDelete(app)}>永久删除</button></div>
+    </article>)}</div> : <Empty title="回收站是空的" text="删除的投递会在这里保留30天，期间可以完整恢复。" />}
   </section>;
 }
 
@@ -342,12 +458,12 @@ function ScheduleEditor({ value, applications, onClose, onSaved }: any) {
   return <Modal title={value ? "编辑日程" : "添加日程"} subtitle="用于截止日期、宣讲会和提醒；笔面试题目请在“笔面试记录”中填写。" onClose={onClose}><form onSubmit={submit}><div className="form-grid"><label>日程名称 *<input required {...field("title")} placeholder="例如：腾讯提前批投递截止" /></label><label>日程类型<select {...field("event_type")}><option>投递截止</option><option>宣讲会</option><option>结果提醒</option><option>准备任务</option><option>其他</option></select></label><label>时间 *<input required type="datetime-local" {...field("scheduled_at")} /></label><label>提醒<select {...field("reminder")}><option>不提醒</option><option>提前30分钟</option><option>提前1小时</option><option>提前1天</option><option>提前3天</option></select></label><label className="full">关联岗位（可选）<select disabled={!applications.length} {...field("application_id")}><option value="">{applications.length ? "不关联岗位" : "暂无岗位记录，请先在投递管理中新增"}</option>{applications.map((a: Application) => <option key={a.id} value={a.id}>{a.company} · {a.role}</option>)}</select><small className="field-hint">这里显示的是“投递管理”中已经添加的公司与岗位。</small></label><label className="full">地点 / 链接<input {...field("location")} placeholder="会议地址、官网链接或线下地点" /></label><label className="full">备注<textarea rows={4} {...field("notes")} placeholder="需要准备的材料、注意事项等" /></label><label className="schedule-check"><input type="checkbox" checked={Boolean(form.completed)} onChange={(e) => setForm({ ...form, completed: e.target.checked ? 1 : 0 })} /> 标记为已完成</label></div><div className="modal-actions">{value && <button type="button" className="danger" onClick={remove}>删除日程</button>}<span /><button type="button" className="secondary compact" onClick={onClose}>取消</button><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存日程"}</button></div></form></Modal>;
 }
 
-function ApplicationEditor({ value, onClose, onSaved }: any) {
+function ApplicationEditor({ value, onClose, onSaved, onDeleted }: any) {
   const [form, setForm] = useState({ ...emptyApp, ...(value || {}) }); const [saving, setSaving] = useState(false);
   const directUrl = externalUrl(form.apply_url);
   function field(key: string) { return { value: form[key] ?? "", onChange: (e: any) => setForm({ ...form, [key]: e.target.value }) }; }
   async function submit(e: FormEvent) { e.preventDefault(); setSaving(true); try { await request(value ? `/applications/${value.id}` : "/applications", { method: value ? "PATCH" : "POST", body: JSON.stringify(form) }); onSaved(); } catch (err) { alert(err instanceof Error ? err.message : "保存失败"); } finally { setSaving(false); } }
-  async function remove() { if (!value || !confirm("删除后，该岗位下的笔面试记录也会删除。确定继续吗？")) return; await request(`/applications/${value.id}`, { method: "DELETE" }); onSaved(); }
+  async function remove() { if (!value || !confirm("确定移入回收站吗？岗位及其招聘流程会保留30天，期间可以恢复。")) return; await request(`/applications/${value.id}`, { method: "DELETE" }); onDeleted(); }
   return <Modal title={value ? "编辑投递" : "新增投递"} subtitle="先记下关键信息，其余内容可以随时补充。" onClose={onClose}>
     <form onSubmit={submit}>
       <div className="form-grid">
