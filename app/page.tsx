@@ -5,9 +5,9 @@ import { FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react
 import "./process-fixes.css";
 
 const API = "http://localhost:4311/api";
-const statuses = ["准备投递", "已投递", "笔试", "面试", "Offer", "拒绝", "放弃"];
+const statuses = ["准备投递", "已投递", "笔试", "面试", "OC", "Offer", "拒绝", "放弃"];
 const priorityRanks: Record<string, number> = { "高": 0, "中": 1, "低": 2 };
-const progressRanks: Record<string, number> = { "Offer": 0, "面试": 1, "笔试": 2, "放弃": 3, "拒绝": 4, "已投递": 5, "准备投递": 6 };
+const progressRanks: Record<string, number> = { "Offer": 0, "OC": 1, "面试": 2, "笔试": 3, "放弃": 4, "拒绝": 5, "已投递": 6, "准备投递": 7 };
 const rejectionStages = ["初筛挂", "笔试挂", "测评挂", "一面挂", "二面挂", "三面挂"];
 const sessionTypes = ["AI面试", "测评", "笔试", "面试"];
 const interviewRounds = ["技术一面", "技术二面", "技术三面", "HR面", "终面"];
@@ -347,7 +347,7 @@ export default function Home() {
 function Overview({ applications, sessions, upcoming, onAddApp, onAddSession, onAddSchedule, onOpenSession, onOpenSchedule, onView }: any) {
   const examSessions = sessions.filter((s: Session) => ["笔试", "测评"].includes(s.type));
   const interviewSessions = sessions.filter((s: Session) => ["面试", "AI面试"].includes(s.type));
-  const submittedCount = applications.filter((a: Application) => ["已投递", "笔试", "面试", "Offer", "拒绝"].includes(a.status)).length;
+  const submittedCount = applications.filter((a: Application) => ["已投递", "笔试", "面试", "OC", "Offer", "拒绝"].includes(a.status)).length;
   const examCount = examSessions.length + applications.filter((a: Application) => a.status === "笔试" && !examSessions.some((s: Session) => s.application_id === a.id)).length;
   const interviewCount = interviewSessions.length + applications.filter((a: Application) => a.status === "面试" && !interviewSessions.some((s: Session) => s.application_id === a.id)).length;
   const cards = [
@@ -587,7 +587,7 @@ function CalendarView({ sessions, schedules, clock, onOpenSession, onOpenSchedul
 }
 
 function InsightsView({ applications, sessions }: any) {
-  const total = applications.length || 1; const funnel = ["已投递", "笔试", "面试", "Offer"].map((label, i) => ({ label, count: applications.filter((a: Application) => statuses.indexOf(a.status) >= i + 1 && !["拒绝", "放弃"].includes(a.status)).length }));
+  const total = applications.length || 1; const funnel = ["已投递", "笔试", "面试", "OC", "Offer"].map((label) => ({ label, count: applications.filter((a: Application) => statuses.indexOf(a.status) >= statuses.indexOf(label) && !["拒绝", "放弃"].includes(a.status)).length }));
   const channels = Object.entries(applications.reduce((acc: Record<string, number>, a: Application) => { const key = String(a.channel || "未填写"); acc[key] = (acc[key] || 0) + 1; return acc; }, {})).sort((a: any, b: any) => b[1] - a[1]);
   return <section className="insights-grid"><article className="panel funnel"><p className="eyebrow">转化漏斗</p><h2>从投递到 Offer</h2>{funnel.map((x) => <div key={x.label}><span>{x.label}<b>{x.count}</b></span><i style={{ width: `${Math.max(4, applications.length ? x.count / total * 100 : 0)}%` }} /></div>)}</article><article className="panel"><p className="eyebrow">记录质量</p><h2>你的复盘积累</h2><div className="big-number">{sessions.length}<small>场招聘流程</small></div><div className="insight-line"><span>累计题目</span><b>{sessions.reduce((n: number, s: Session) => n + Number(s.question_count || 0), 0)} 道</b></div><div className="insight-line"><span>已有结果</span><b>{sessions.filter((s: Session) => s.result !== "待定").length} 场</b></div></article><article className="panel channels"><p className="eyebrow">渠道分布</p><h2>投递来自哪里</h2>{channels.length ? channels.map(([name, count]: any) => <div key={name}><span>{name}</span><b>{count}</b><i style={{ width: `${count / total * 100}%` }} /></div>) : <p className="muted">填写投递渠道后，这里会自动统计。</p>}</article></section>;
 }

@@ -758,7 +758,7 @@ async function buildApplicationsWorkbook(requestedIds = []) {
     for (const column of [1, 6, 7]) row.getCell(column).alignment = { horizontal: "center", vertical: "middle" };
   });
   styleExcelSheet(overview, 8);
-  const statusColors = { "准备投递": "FF8493A8", "已投递": "FF3B82F6", "笔试": "FFF3A72F", "面试": "FF9B6DF4", "Offer": "FF19B77C", "拒绝": "FFE85D75", "放弃": "FF667085" };
+  const statusColors = { "准备投递": "FF8493A8", "已投递": "FF3B82F6", "笔试": "FFF3A72F", "面试": "FF9B6DF4", "OC": "FF06B6D4", "Offer": "FF19B77C", "拒绝": "FFE85D75", "放弃": "FF667085" };
   overviewStatus.forEach((status, index) => {
     const row = overview.getRow(index + 2);
     row.getCell(2).font = { name: "Microsoft YaHei", size: 10, bold: true, color: { argb: "FF1C2A44" } };

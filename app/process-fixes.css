@@ -656,11 +656,13 @@ html[data-theme="light"] .sidebar-toggle:hover {
 .legend-status-3,
 .board-status-3 { --board-color: #9b6df4; }
 .legend-status-4,
-.board-status-4 { --board-color: #19b77c; }
+.board-status-4 { --board-color: #06b6d4; }
 .legend-status-5,
-.board-status-5 { --board-color: #e85d75; }
+.board-status-5 { --board-color: #19b77c; }
 .legend-status-6,
-.board-status-6 { --board-color: #667085; }
+.board-status-6 { --board-color: #e85d75; }
+.legend-status-7,
+.board-status-7 { --board-color: #667085; }
 
 .board-toolbar {
   display: flex;
