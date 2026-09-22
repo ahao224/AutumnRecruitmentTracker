@@ -582,7 +582,12 @@ function CalendarView({ sessions, schedules, clock, onOpenSession, onOpenSchedul
   const sorted = [
     ...sessions.filter((s: Session) => s.scheduled_at).map((s: Session) => ({ ...s, source: "session", agendaTitle: `${s.company} · ${s.round || s.type}`, agendaDetail: `${s.format || "形式待定"}${s.duration ? ` · ${s.duration} 分钟` : ""}`, agendaKind: s.type })),
     ...schedules.map((s: ScheduleEvent) => ({ ...s, source: "schedule", agendaTitle: s.title, agendaDetail: [s.company, s.location, s.reminder].filter(Boolean).join(" · "), agendaKind: s.event_type })),
-  ].sort((a, b) => +new Date(a.scheduled_at) - +new Date(b.scheduled_at));
+  ].sort((a, b) => {
+    const aCompleted = a.source === "session" ? sessionEndTimestamp(a as Session) <= clock : Boolean(a.completed) || +new Date(a.scheduled_at) < clock;
+    const bCompleted = b.source === "session" ? sessionEndTimestamp(b as Session) <= clock : Boolean(b.completed) || +new Date(b.scheduled_at) < clock;
+    if (aCompleted !== bCompleted) return Number(aCompleted) - Number(bCompleted);
+    return +new Date(b.scheduled_at) - +new Date(a.scheduled_at);
+  });
   return <section className="calendar-panel"><div className="calendar-toolbar"><div><p className="eyebrow">AGENDA</p><b>{sorted.length} 项安排</b></div><button className="primary compact" onClick={onAdd}>＋ 添加日程</button></div>{sorted.length ? sorted.map((s: any) => { const d = new Date(s.scheduled_at); const past = s.source === "session" ? sessionEndTimestamp(s as Session) <= clock : d.getTime() < clock; return <button className={`calendar-row ${past || s.completed ? "past" : ""}`} key={`${s.source}-${s.id}`} onClick={() => s.source === "session" ? onOpenSession(s) : onOpenSchedule(s)}><time><b>{d.getDate()}</b><span>{d.getMonth() + 1}月</span></time><i /><div><small>{s.completed ? "已完成" : past ? (s.source === "session" ? sessionDisplayResult(s as Session, clock) : "已过期") : d.getTime() <= clock ? "进行中" : "即将进行"}</small><h3>{s.agendaTitle}</h3><p>{formatDate(s.scheduled_at)}{s.agendaDetail ? ` · ${s.agendaDetail}` : ""}</p></div><span className={`kind ${s.agendaKind === "笔试" || s.agendaKind === "投递截止" ? "exam" : ""}`}>{s.agendaKind}</span></button>; }) : <Empty title="日程还是空的" text="可以添加投递截止、宣讲会、结果提醒或其他安排。" action="添加第一条日程" onClick={onAdd} />}</section>;
 }
 
