@@ -74,3 +74,20 @@ html[data-theme="light"] .calendar-row.past{opacity:.68;border-bottom-color:#dfe
 html[data-theme="light"] .calendar-row.past>time b,html[data-theme="light"] .calendar-row.past h3{color:#718096}
 html[data-theme="light"] .calendar-row.past small{border-color:#d7e0eb;background:#eef2f6;color:#78879a}
 html[data-theme="light"] .calendar-row.past p{color:#8795a8}
+
+
+/* application status colors with talent pool */
+.status-chip.s-2{border-color:#4d4a83;background:#25244b;color:#c8c7ff}
+.status-chip.s-3{border-color:#674d2f;background:#3b2b1c;color:#ffd088}
+.status-chip.s-4{border-color:#633d5a;background:#37203a;color:#f4a4e8}
+.status-chip.s-5{border-color:#256272;background:#123743;color:#68e7f1}
+.status-chip.s-6{border-color:#285944;background:#17352c;color:#68e6ae}
+.status-chip.s-7{border-color:#6b3543;background:#3a1e29;color:#ff9aad}
+.status-chip.s-8{border-color:#435064;background:#242d3c;color:#aeb9c8}
+html[data-theme="light"] .status-chip.s-2{color:#5145a7;border-color:#cfcaf4;background:#f0efff}
+html[data-theme="light"] .status-chip.s-3{color:#93643f;border-color:#ead3b2;background:#fbf1e3}
+html[data-theme="light"] .status-chip.s-4{color:#8b3d7d;border-color:#e9c8e4;background:#faedf8}
+html[data-theme="light"] .status-chip.s-5{color:#16758a;border-color:#addfe8;background:#e6f8fb}
+html[data-theme="light"] .status-chip.s-6{color:#287057;border-color:#b9decf;background:#e8f6f0}
+html[data-theme="light"] .status-chip.s-7{color:#a34258;border-color:#edc4ce;background:#fff0f3}
+html[data-theme="light"] .status-chip.s-8{color:#667085;border-color:#d6dae1;background:#f0f2f5}

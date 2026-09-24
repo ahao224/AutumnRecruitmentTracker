@@ -652,17 +652,19 @@ html[data-theme="light"] .sidebar-toggle:hover {
 .legend-status-1,
 .board-status-1 { --board-color: #3b82f6; }
 .legend-status-2,
-.board-status-2 { --board-color: #f3a72f; }
+.board-status-2 { --board-color: #f59e0b; }
 .legend-status-3,
-.board-status-3 { --board-color: #9b6df4; }
+.board-status-3 { --board-color: #f3a72f; }
 .legend-status-4,
-.board-status-4 { --board-color: #06b6d4; }
+.board-status-4 { --board-color: #9b6df4; }
 .legend-status-5,
-.board-status-5 { --board-color: #19b77c; }
+.board-status-5 { --board-color: #06b6d4; }
 .legend-status-6,
-.board-status-6 { --board-color: #e85d75; }
+.board-status-6 { --board-color: #19b77c; }
 .legend-status-7,
-.board-status-7 { --board-color: #667085; }
+.board-status-7 { --board-color: #e85d75; }
+.legend-status-8,
+.board-status-8 { --board-color: #667085; }
 
 .board-toolbar {
   display: flex;
@@ -1667,3 +1669,10 @@ html[data-theme="light"] .ai-chat-composer>div:not(.ai-chat-error){border-color:
 html[data-theme="light"] .ai-conversation-list>article:hover,html[data-theme="light"] .ai-conversation-list>article.active{border-color:#8eb2df;background:#fff;box-shadow:0 8px 22px #31577e14}
 @media(max-width:1000px){.ai-chat-workspace{grid-template-columns:245px minmax(0,1fr)}.ai-chat-context{align-items:stretch;flex-direction:column}.ai-chat-context>span{align-self:flex-start}}
 @media(max-width:760px){.ai-chat-workspace,.ai-chat-workspace.history-collapsed{height:auto;max-height:none;grid-template-columns:1fr}.ai-chat-history{border-right:0;border-bottom:1px solid var(--border)}.history-collapsed .ai-chat-history{height:62px}.history-collapsed .ai-chat-history>header{justify-content:flex-start;padding:10px 12px}.history-collapsed .ai-history-actions{flex-direction:row}.ai-conversation-list{display:flex;gap:8px;overflow-x:auto;padding:10px}.ai-conversation-list>article{min-width:230px;margin:0}.ai-chat-history>footer{display:none}.ai-chat-panel{min-height:690px}.ai-chat-context>div{grid-template-columns:1fr}.ai-message-list{padding:18px 13px}.ai-message{width:92%}.ai-chat-composer{padding:10px 12px 13px}}
+
+
+/* rejected application card emphasis */
+.company-tile.board-status-7{border-color:#9d4154;background:linear-gradient(145deg,#3a1c27,#251722);box-shadow:inset 3px 0 #ff7188,0 7px 18px #0003}
+.company-tile.board-status-7 .company-tile-head i{border-color:#9d4154;background:#4a2130;color:#ffabb9}
+html[data-theme="light"] .company-tile.board-status-7{border-color:#efb2be;background:linear-gradient(145deg,#fff1f3,#ffe7ec);box-shadow:inset 3px 0 #e85d75,0 7px 18px #b83c5614}
+html[data-theme="light"] .company-tile.board-status-7 .company-tile-head i{border-color:#efb2be;background:#ffe0e6;color:#a83b51}

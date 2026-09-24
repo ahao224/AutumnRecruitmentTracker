@@ -200,7 +200,7 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation_created ON ai_m
 db.exec("PRAGMA optimize");
 db.exec("PRAGMA optimize");
 
-const rejectionStages = new Set(["初筛挂", "笔试挂", "测评挂", "一面挂", "二面挂", "三面挂"]);
+const rejectionStages = new Set(["初筛挂", "业务筛选挂", "笔试挂", "测评挂", "一面挂", "二面挂", "三面挂"]);
 const applicationColumns = ["company", "role", "location", "channel", "apply_url", "applied_at", "status", "rejection_stage", "priority", "salary", "jd", "referral", "resume_version", "resume_id", "notes", "ai_analysis"];
 const applicationStorageColumns = [...applicationColumns, "deleted_at", "link_check_status", "link_check_message", "link_checked_at"];
 const sessionColumns = ["application_id", "type", "round", "scheduled_at", "duration", "format", "location", "interviewer", "result", "notification_date", "overall_notes", "improvements", "rating"];
@@ -229,6 +229,17 @@ function todayLocalDate() {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 function clean(value, fallback = "") { return typeof value === "string" ? value.trim() : fallback; }
+function advanceApplicationStatusFromSession(applicationId, sessionType, stamp = now()) {
+  const desiredStatus = ["面试", "AI面试"].includes(clean(sessionType)) ? "面试" : ["笔试", "测评"].includes(clean(sessionType)) ? "笔试" : "";
+  if (!desiredStatus) return false;
+  const application = db.prepare("SELECT status FROM applications WHERE id=? AND deleted_at=''").get(clean(applicationId));
+  if (!application || application.status === desiredStatus) return false;
+  const updatableStatuses = desiredStatus === "面试" ? new Set(["准备投递", "已投递", "笔试"]) : new Set(["准备投递", "已投递"]);
+  if (!updatableStatuses.has(application.status)) return false;
+  db.prepare("UPDATE applications SET status=?,rejection_stage='',applied_at=CASE WHEN applied_at='' THEN ? ELSE applied_at END,updated_at=? WHERE id=?")
+    .run(desiredStatus, todayLocalDate(), stamp, clean(applicationId));
+  return true;
+}
 function readStoredAiConfig() {
   if (!existsSync(AI_CONFIG_PATH)) return {};
   try {
@@ -758,7 +769,7 @@ async function buildApplicationsWorkbook(requestedIds = []) {
     for (const column of [1, 6, 7]) row.getCell(column).alignment = { horizontal: "center", vertical: "middle" };
   });
   styleExcelSheet(overview, 8);
-  const statusColors = { "准备投递": "FF8493A8", "已投递": "FF3B82F6", "笔试": "FFF3A72F", "面试": "FF9B6DF4", "OC": "FF06B6D4", "Offer": "FF19B77C", "拒绝": "FFE85D75", "放弃": "FF667085" };
+  const statusColors = { "准备投递": "FF8493A8", "已投递": "FF3B82F6", "进入人才库": "FF6366F1", "笔试": "FFF3A72F", "面试": "FF9B6DF4", "OC": "FF06B6D4", "Offer": "FF19B77C", "拒绝": "FFE85D75", "放弃": "FF667085" };
   overviewStatus.forEach((status, index) => {
     const row = overview.getRow(index + 2);
     row.getCell(2).font = { name: "Microsoft YaHei", size: 10, bold: true, color: { argb: "FF1C2A44" } };
@@ -1178,6 +1189,7 @@ const server = http.createServer(async (req, res) => {
         db.prepare(`INSERT INTO sessions (id,${sessionColumns.join(",")},created_at,updated_at) VALUES (${["?", ...sessionColumns.map(() => "?"), "?", "?"].join(",")})`)
           .run(id, ...sessionColumns.map((key) => ["duration", "rating"].includes(key) ? Number(body[key] || 0) : key === "type" ? clean(body[key], "面试") : key === "result" ? clean(body[key], "待定") : clean(body[key])), stamp, stamp);
         saveQuestions(id, body.questions || []);
+        advanceApplicationStatusFromSession(body.application_id, body.type, stamp);
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
       return json(res, 201, { id });
@@ -1216,6 +1228,8 @@ const server = http.createServer(async (req, res) => {
         if (sets.length) db.prepare(`UPDATE sessions SET ${sets.map((key) => `${key}=?`).join(",")}, updated_at=? WHERE id=?`)
           .run(...sets.map((key) => ["duration", "rating"].includes(key) ? Number(body[key] || 0) : clean(body[key])), now(), sessionMatch[1]);
         if (Array.isArray(body.questions)) saveQuestions(sessionMatch[1], body.questions);
+        const updatedSession = db.prepare("SELECT application_id,type FROM sessions WHERE id=?").get(sessionMatch[1]);
+        if (updatedSession) advanceApplicationStatusFromSession(updatedSession.application_id, updatedSession.type);
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
       return json(res, 200, { ok: true });
