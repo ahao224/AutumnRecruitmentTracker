@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/set-state-in-effect, react-hooks/purity, jsx-a11y/no-autofocus, jsx-a11y/no-static-element-interactions */
 
 import { FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import "./process-fixes.css";
 
 const API = "http://localhost:4311/api";
@@ -21,7 +22,9 @@ const navItems = [
 
 type Application = Record<string, string | number> & { id: string; company: string; role: string; status: string; rejection_stage: string; priority: string };
 type Session = Record<string, string | number> & { id: string; application_id: string; company: string; role: string; type: string; round: string; scheduled_at: string; result: string };
-type Question = { id?: string; content: string; answer: string; reference_answer: string; category: string; needs_review: number | boolean };
+type QuestionImage = { id: string; question_id: string; original_name: string; mime_type: string; size: number; created_at: string };
+type Question = { id?: string; content: string; answer: string; reference_answer: string; category: string; needs_review: number | boolean; images?: QuestionImage[] };
+type PendingQuestionImage = { id: string; file: File; url: string };
 type SessionDetail = Session & { questions: Question[]; attachments: { id: string; original_name: string; mime_type: string; size: number }[] };
 type Resume = { id: string; title: string; version: string; target_role: string; notes: string; original_name: string; mime_type: string; size: number; is_default: number; created_at: string };
 type ScheduleEvent = { id: string; application_id: string; title: string; event_type: string; scheduled_at: string; location: string; reminder: string; notes: string; completed: number; company?: string; role?: string };
@@ -48,6 +51,7 @@ type AiJobAnalysis = {
 const emptyApp = { company: "", role: "", location: "", channel: "", apply_url: "", applied_at: "", status: "准备投递", rejection_stage: "", priority: "中", salary: "", jd: "", referral: "", resume_version: "", resume_id: "", notes: "", ai_analysis: "" };
 const emptySession = { application_id: "", type: "面试", round: "技术一面", scheduled_at: "", duration: "60", format: "视频", location: "", interviewer: "", result: "待进行", notification_date: "", overall_notes: "", improvements: "", rating: "0", questions: [] as Question[] };
 const emptySchedule = { application_id: "", title: "", event_type: "投递截止", scheduled_at: "", location: "", reminder: "提前1天", notes: "", completed: 0 };
+function createQuestion(): Question { return { id: crypto.randomUUID(), content: "", answer: "", reference_answer: "", category: "", needs_review: 0, images: [] }; }
 
 async function request(path: string, options?: RequestInit) {
   const response = await fetch(`${API}${path}`, { headers: { "Content-Type": "application/json", ...(options?.headers || {}) }, ...options });
@@ -206,7 +210,7 @@ export default function Home() {
   }
   useEffect(() => { load(); }, []);
   useEffect(() => {
-    const timer = window.setInterval(() => setClock(Date.now()), 30_000);
+    const timer = window.setInterval(() => { setClock(Date.now()); load(); }, 30_000);
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
@@ -327,7 +331,7 @@ export default function Home() {
           {view === "applications" && <ApplicationsView applications={filteredApps} sessions={sessions} clock={clock} search={search} setSearch={setSearch} filter={statusFilter} setFilter={setStatusFilter} onEdit={setAppEditor} onDelete={deleteApplication} onStatus={updateStatus} onSession={newSession} onOpenSession={openSession} onDeleteSession={deleteSessionFromList} onCheckLinks={checkLinks} checkingLinks={checkingLinks} />}
           {view === "sessions" && <SessionsView sessions={sessions} clock={clock} onOpen={openSession} onAdd={() => newSession()} />}
           {view === "calendar" && <CalendarView sessions={sessions} schedules={schedules} clock={clock} onOpenSession={openSession} onOpenSchedule={setScheduleEditor} onAdd={() => setScheduleEditor("new")} />}
-          {view === "insights" && <InsightsView applications={applications} sessions={sessions} />}
+          {view === "insights" && <InsightsView applications={applications} sessions={sessions} clock={clock} onOpen={openSession} />}
           {view === "ai" && <AiChatView applications={applications} resumes={resumes} onOpenSettings={() => setView("data")} notify={notify} />}
           {view === "resumes" && <ResumeView resumes={resumes} onReload={load} notify={notify} />}
           {view === "trash" && <TrashView applications={trash} onRestore={restoreApplication} onDelete={permanentlyDeleteApplication} onEmpty={emptyTrash} />}
@@ -591,10 +595,27 @@ function CalendarView({ sessions, schedules, clock, onOpenSession, onOpenSchedul
   return <section className="calendar-panel"><div className="calendar-toolbar"><div><p className="eyebrow">AGENDA</p><b>{sorted.length} 项安排</b></div><button className="primary compact" onClick={onAdd}>＋ 添加日程</button></div>{sorted.length ? sorted.map((s: any) => { const d = new Date(s.scheduled_at); const past = s.source === "session" ? sessionEndTimestamp(s as Session) <= clock : d.getTime() < clock; return <button className={`calendar-row ${past || s.completed ? "past" : ""}`} key={`${s.source}-${s.id}`} onClick={() => s.source === "session" ? onOpenSession(s) : onOpenSchedule(s)}><time><b>{d.getDate()}</b><span>{d.getMonth() + 1}月</span></time><i /><div><small>{s.completed ? "已完成" : past ? (s.source === "session" ? sessionDisplayResult(s as Session, clock) : "已过期") : d.getTime() <= clock ? "进行中" : "即将进行"}</small><h3>{s.agendaTitle}</h3><p>{formatDate(s.scheduled_at)}{s.agendaDetail ? ` · ${s.agendaDetail}` : ""}</p></div><span className={`kind ${s.agendaKind === "笔试" || s.agendaKind === "投递截止" ? "exam" : ""}`}>{s.agendaKind}</span></button>; }) : <Empty title="日程还是空的" text="可以添加投递截止、宣讲会、结果提醒或其他安排。" action="添加第一条日程" onClick={onAdd} />}</section>;
 }
 
-function InsightsView({ applications, sessions }: any) {
-  const total = applications.length || 1; const funnel = ["已投递", "笔试", "面试", "OC", "Offer"].map((label) => ({ label, count: applications.filter((a: Application) => statuses.indexOf(a.status) >= statuses.indexOf(label) && !["拒绝", "放弃"].includes(a.status)).length }));
+function InsightsView({ applications, sessions, clock, onOpen }: any) {
+  const [showEmptyReviews, setShowEmptyReviews] = useState(false);
+  const total = applications.length || 1;
+  const funnel = ["已投递", "笔试", "面试", "OC", "Offer"].map((label) => ({ label, count: applications.filter((a: Application) => statuses.indexOf(a.status) >= statuses.indexOf(label) && !["拒绝", "放弃"].includes(a.status)).length }));
   const channels = Object.entries(applications.reduce((acc: Record<string, number>, a: Application) => { const key = String(a.channel || "未填写"); acc[key] = (acc[key] || 0) + 1; return acc; }, {})).sort((a: any, b: any) => b[1] - a[1]);
-  return <section className="insights-grid"><article className="panel funnel"><p className="eyebrow">转化漏斗</p><h2>从投递到 Offer</h2>{funnel.map((x) => <div key={x.label}><span>{x.label}<b>{x.count}</b></span><i style={{ width: `${Math.max(4, applications.length ? x.count / total * 100 : 0)}%` }} /></div>)}</article><article className="panel"><p className="eyebrow">记录质量</p><h2>你的复盘积累</h2><div className="big-number">{sessions.length}<small>场招聘流程</small></div><div className="insight-line"><span>累计题目</span><b>{sessions.reduce((n: number, s: Session) => n + Number(s.question_count || 0), 0)} 道</b></div><div className="insight-line"><span>已有结果</span><b>{sessions.filter((s: Session) => s.result !== "待定").length} 场</b></div></article><article className="panel channels"><p className="eyebrow">渠道分布</p><h2>投递来自哪里</h2>{channels.length ? channels.map(([name, count]: any) => <div key={name}><span>{name}</span><b>{count}</b><i style={{ width: `${count / total * 100}%` }} /></div>) : <p className="muted">填写投递渠道后，这里会自动统计。</p>}</article></section>;
+  const reviews = [...sessions].filter((session: Session) => ["笔试", "面试", "AI面试"].includes(session.type)).sort((a: Session, b: Session) => {
+    const aTime = new Date(a.scheduled_at || a.created_at || "").getTime() || 0;
+    const bTime = new Date(b.scheduled_at || b.created_at || "").getTime() || 0;
+    return bTime - aTime;
+  });
+  const emptyReviewCount = reviews.filter((session: Session) => Number(session.question_count || 0) === 0).length;
+  const visibleReviews = showEmptyReviews ? reviews : reviews.filter((session: Session) => Number(session.question_count || 0) > 0);
+  const reviewQuestionCount = visibleReviews.reduce((count: number, session: Session) => count + Number(session.question_count || 0), 0);
+  return <section className="insights-grid">
+    <article className="panel funnel"><p className="eyebrow">转化漏斗</p><h2>从投递到 Offer</h2>{funnel.map((x) => <div key={x.label}><span>{x.label}<b>{x.count}</b></span><i style={{ width: `${Math.max(4, applications.length ? x.count / total * 100 : 0)}%` }} /></div>)}</article>
+    <article className="panel"><p className="eyebrow">记录质量</p><h2>你的复盘积累</h2><div className="big-number">{sessions.length}<small>场招聘流程</small></div><div className="insight-line"><span>累计题目</span><b>{sessions.reduce((n: number, s: Session) => n + Number(s.question_count || 0), 0)} 道</b></div><div className="insight-line"><span>已有结果</span><b>{sessions.filter((s: Session) => !["待定", "待进行"].includes(s.result)).length} 场</b></div></article>
+    <article className="panel interview-reviews"><div className="interview-reviews-head"><div><p className="eyebrow">笔面试复盘</p><h2>记录过的每一场</h2></div><div className="interview-reviews-actions"><span>{visibleReviews.length} 场 · {reviewQuestionCount} 道题</span>{emptyReviewCount > 0 && <button type="button" onClick={() => setShowEmptyReviews((current) => !current)}>{showEmptyReviews ? "隐藏未记录题目" : `显示未记录题目（${emptyReviewCount}）`}</button>}</div></div>
+      {visibleReviews.length ? <div className="interview-review-list">{visibleReviews.map((session: Session) => { const result = session.result === "待进行" && +new Date(session.scheduled_at) <= clock && sessionEndTimestamp(session) > clock ? "进行中" : sessionDisplayResult(session, clock); const note = String(session.overall_notes || session.improvements || "").trim(); return <button className="interview-review-card" key={session.id} onClick={() => onOpen(session)}><div className="interview-review-top"><span className={`kind ${sessionTypeClass(session.type)}`}>{session.type}</span><span className={`result r-${result}`}>{result}</span></div><h3>{session.company} · {session.round || session.type}</h3><p>{session.role}</p>{note && <blockquote>{note}</blockquote>}<div className="interview-review-meta"><span>{session.scheduled_at ? formatDate(session.scheduled_at) : "时间未填写"}</span><span>{session.question_count || 0} 道题</span><span>{Number(session.rating) ? `${session.rating}/5 分` : "未评分"}</span></div><b className="interview-review-open">查看详细复盘 →</b></button>; })}</div> : <Empty title="还没有记录题目的笔面试复盘" text={emptyReviewCount ? "当前无题目记录的笔面试已隐藏，可点击右上角按钮查看。" : "记录笔试、面试或 AI 面试题目后，会自动汇总到这里。"} />}
+    </article>
+    <article className="panel channels"><p className="eyebrow">渠道分布</p><h2>投递来自哪里</h2>{channels.length ? channels.map(([name, count]: any) => <div key={name}><span>{name}</span><b>{count}</b><i style={{ width: `${count / total * 100}%` }} /></div>) : <p className="muted">填写投递渠道后，这里会自动统计。</p>}</article>
+  </section>;
 }
 
 function ResumeView({ resumes, onReload, notify }: { resumes: Resume[]; onReload: () => Promise<void>; notify: (message: string) => void }) {
@@ -646,12 +667,15 @@ function AiChatView({ applications, resumes, onOpenSettings, notify }: { applica
   const [aiConfig, setAiConfig] = useState<AiConfig | null>(null);
   const [historyCollapsed, setHistoryCollapsed] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
-  const quickPrompts = [
-    ["岗位匹配", "请结合关联岗位和简历，分析我的匹配优势、明确缺口，并给出最优先的三个准备动作。"],
-    ["模拟面试", "请基于关联岗位和我的简历模拟一轮面试。先问我一道最可能出现的问题，等我回答后再点评和追问。"],
-    ["面试复盘", "请总结已记录的招聘流程和题目，找出反复出现的薄弱点，并给出一周复习安排。"],
-    ["今日计划", "请结合当前岗位进度、简历和面试记录，给我一份今天可以完成的求职准备清单，按优先级排序。"],
+  const defaultQuickPrompts = [
+    { label: "岗位匹配", content: "请结合关联岗位和简历，分析我的匹配优势、明确缺口，并给出最优先的三个准备动作。" },
+    { label: "模拟面试", content: "请基于关联岗位和我的简历模拟一轮面试。先问我一道最可能出现的问题，等我回答后再点评和追问。" },
+    { label: "面试复盘", content: "请总结已记录的招聘流程和题目，找出反复出现的薄弱点，并给出一周复习安排。" },
+    { label: "今日计划", content: "请结合当前岗位进度、简历和面试记录，给我一份今天可以完成的求职准备清单，按优先级排序。" },
   ];
+  const [quickPrompts, setQuickPrompts] = useState(defaultQuickPrompts);
+  const [quickPromptDrafts, setQuickPromptDrafts] = useState(defaultQuickPrompts);
+  const [editingQuickPrompts, setEditingQuickPrompts] = useState(false);
   useEffect(() => {
     Promise.all([request("/ai/conversations"), request("/ai/config")]).then(([history, config]) => {
       const items = history.conversations || [];
@@ -660,7 +684,23 @@ function AiChatView({ applications, resumes, onOpenSettings, notify }: { applica
       if (items[0]) selectConversation(items[0].id);
     }).catch((reason) => setError(reason instanceof Error ? reason.message : "AI 助手加载失败"));
   }, []);
-  useEffect(() => { setHistoryCollapsed(window.localStorage.getItem("autumn-ai-history-collapsed") === "true"); }, []);
+  useEffect(() => {
+    setHistoryCollapsed(window.localStorage.getItem("autumn-ai-history-collapsed") === "true");
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("autumn-ai-quick-prompts") || "null");
+      if (Array.isArray(saved) && saved.length === 4 && saved.every((item) => typeof item?.label === "string" && typeof item?.content === "string" && item.label.trim() && item.content.trim())) {
+        const normalized = saved.map((item) => ({ label: item.label.trim().slice(0, 12), content: item.content.trim().slice(0, 1000) }));
+        setQuickPrompts(normalized);
+        setQuickPromptDrafts(normalized);
+      }
+    } catch { /* Ignore invalid local custom prompt data. */ }
+  }, []);
+  useEffect(() => {
+    if (!editingQuickPrompts) return;
+    const closeEditor = (event: KeyboardEvent) => { if (event.key === "Escape") setEditingQuickPrompts(false); };
+    window.addEventListener("keydown", closeEditor);
+    return () => window.removeEventListener("keydown", closeEditor);
+  }, [editingQuickPrompts]);
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       const list = messageListRef.current;
@@ -723,6 +763,21 @@ function AiChatView({ applications, resumes, onOpenSettings, notify }: { applica
       notify("AI 对话已删除");
     } catch (reason) { notify(reason instanceof Error ? reason.message : "删除失败"); }
   }
+  function openQuickPromptEditor() {
+    setQuickPromptDrafts(quickPrompts.map((item) => ({ ...item })));
+    setEditingQuickPrompts(true);
+  }
+  function updateQuickPrompt(index: number, key: "label" | "content", value: string) {
+    setQuickPromptDrafts((current) => current.map((item, position) => position === index ? { ...item, [key]: value } : item));
+  }
+  function saveQuickPrompts() {
+    const normalized = quickPromptDrafts.map((item) => ({ label: item.label.trim(), content: item.content.trim() }));
+    if (normalized.some((item) => !item.label || !item.content)) return notify("按钮名称和提问内容都不能为空");
+    setQuickPrompts(normalized);
+    window.localStorage.setItem("autumn-ai-quick-prompts", JSON.stringify(normalized));
+    setEditingQuickPrompts(false);
+    notify("快捷提问已保存到本机");
+  }
   async function sendMessage(content = draft) {
     const message = content.trim();
     if (!message || busy) return;
@@ -759,7 +814,7 @@ function AiChatView({ applications, resumes, onOpenSettings, notify }: { applica
     </aside>
     <article className="ai-chat-panel">
       <header className="ai-chat-context"><div><label>关联岗位<select value={applicationId} onChange={(event) => updateContext("application_id", event.target.value)}><option value="">不关联岗位</option>{applications.map((application) => <option key={application.id} value={application.id}>{application.company} · {application.role}</option>)}</select></label><label>参考简历<select value={resumeId} onChange={(event) => updateContext("resume_id", event.target.value)}><option value="">自动使用默认简历{defaultResume ? ` · ${defaultResume.title}` : ""}</option>{resumes.map((resume) => <option key={resume.id} value={resume.id}>{resume.is_default ? "默认 · " : ""}{resume.title}{resume.version ? ` · ${resume.version}` : ""}</option>)}</select></label></div><span className={aiConfig?.configured ? "ready" : "not-ready"}><i />{aiConfig?.configured ? `${aiConfig.model} 已连接` : "AI 尚未配置"}</span></header>
-      <div className="ai-quick-prompts">{quickPrompts.map(([label, content]) => <button type="button" key={label} disabled={busy} onClick={() => sendMessage(content)}>{label}</button>)}</div>
+      <div className="ai-quick-prompts">{quickPrompts.map((item, index) => <button type="button" key={`${index}-${item.label}`} disabled={busy} onClick={() => sendMessage(item.content)} title={item.content}>{item.label}</button>)}<button type="button" className="ai-quick-edit" onClick={openQuickPromptEditor} aria-label="自定义快捷提问">✎ 自定义</button></div>
       <div className="ai-message-list" ref={messageListRef}>
         {loadingMessages ? <div className="ai-chat-loading">正在读取对话…</div> : messages.length ? messages.map((message) => <article className={`ai-message ${message.role}`} key={message.id}><header><span>{message.role === "assistant" ? "✦ 求职助手" : "我"}</span><time>{formatDate(message.created_at)}</time></header><p>{message.content}</p>{message.role === "assistant" && message.sources?.length > 0 && <footer>{message.sources.map((source, index) => <span key={`${message.id}-${source.type}-${index}`}>{source.label}</span>)}</footer>}</article>) : <div className="ai-chat-empty"><span>✦</span><h2>从一个具体问题开始</h2><p>关联岗位后，我会读取对应的 JD、投递状态、招聘流程和面试复盘；简历未指定时使用默认简历。</p><div>{["比较岗位与简历", "模拟下一轮面试", "整理薄弱知识点"].map((item) => <span key={item}>{item}</span>)}</div></div>}
         {busy && <article className="ai-message assistant thinking"><header><span>✦ 求职助手</span></header><p><i /><i /><i /></p></article>}
@@ -770,6 +825,7 @@ function AiChatView({ applications, resumes, onOpenSettings, notify }: { applica
         <small>发送时会把当前问题和所选上下文提交给已配置模型；历史记录保存在本机。AI 不会自动修改投递数据。</small>
       </footer>
     </article>
+    {editingQuickPrompts && createPortal(<div className="ai-quick-editor-backdrop" role="dialog" aria-modal="true" aria-label="自定义快捷提问" onMouseDown={() => setEditingQuickPrompts(false)}><section className="ai-quick-editor" onMouseDown={(event) => event.stopPropagation()}><header><div><p className="eyebrow">快捷提问</p><h2>自定义四个问题</h2><span>按钮名称用于快速识别，提问内容会完整发送给 AI。</span></div><button type="button" onClick={() => setEditingQuickPrompts(false)} aria-label="关闭">×</button></header><div className="ai-quick-editor-list">{quickPromptDrafts.map((item, index) => <article key={index}><b>{index + 1}</b><label>按钮名称<input maxLength={12} value={item.label} onChange={(event) => updateQuickPrompt(index, "label", event.target.value)} /></label><label>提问内容<textarea rows={3} maxLength={1000} value={item.content} onChange={(event) => updateQuickPrompt(index, "content", event.target.value)} /></label></article>)}</div><footer><button type="button" className="ai-quick-reset" onClick={() => setQuickPromptDrafts(defaultQuickPrompts.map((item) => ({ ...item })))}>恢复默认</button><span /><button type="button" className="secondary compact" onClick={() => setEditingQuickPrompts(false)}>取消</button><button type="button" className="primary compact" onClick={saveQuickPrompts}>保存设置</button></footer></section></div>, document.body)}
   </section>;
 }
 
@@ -864,8 +920,15 @@ function ApplicationEditor({ value, resumes, notify, onClose, onSaved, onDeleted
   const [draggingImage, setDraggingImage] = useState(false);
   const [pendingImages, setPendingImages] = useState<{ id: string; file: File; name: string; url: string }[]>([]);
   const [removedImageIds, setRemovedImageIds] = useState<string[]>([]);
+  const [previewNoteImage, setPreviewNoteImage] = useState<{ src: string; name: string } | null>(null);
   const objectUrls = useRef(new Set<string>());
   useEffect(() => () => { objectUrls.current.forEach((url) => URL.revokeObjectURL(url)); }, []);
+  useEffect(() => {
+    if (!previewNoteImage) return;
+    const closePreview = (event: KeyboardEvent) => { if (event.key === "Escape") setPreviewNoteImage(null); };
+    window.addEventListener("keydown", closePreview);
+    return () => window.removeEventListener("keydown", closePreview);
+  }, [previewNoteImage]);
   const directUrl = externalUrl(form.apply_url);
   const jobAnalysis = useMemo(() => parseAiJobAnalysis(form.ai_analysis), [form.ai_analysis]);
   const defaultResume = resumes.find((resume: Resume) => Boolean(resume.is_default)) || resumes[0];
@@ -1012,18 +1075,19 @@ function ApplicationEditor({ value, resumes, notify, onClose, onSaved, onDeleted
             <label className="secondary compact file-label">选择图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { addImages(Array.from(event.target.files || [])); event.target.value = ""; }} /></label>
           </div>
           {(existingImages.length > 0 || pendingImages.length > 0) && <div className="note-image-grid">
-            {existingImages.map((image: any) => <article className="note-image-card" key={image.id}>
-              <a href={`${API}/application-note-images/${image.id}`} target="_blank" rel="noreferrer" title="打开原图"><img src={`${API}/application-note-images/${image.id}`} alt={image.original_name || "备注图片"} loading="lazy" /></a>
+            {existingImages.map((image: any) => { const src = `${API}/application-note-images/${image.id}`; const name = image.original_name || "备注图片"; return <article className="note-image-card" key={image.id}>
+              <button type="button" className="note-image-open" onClick={() => setPreviewNoteImage({ src, name })} aria-label={`放大查看 ${name}`}><img src={src} alt={name} loading="lazy" /></button>
               <footer><span title={image.original_name}>{image.original_name}<small>{Math.max(1, Math.ceil(Number(image.size || 0) / 1024))} KB</small></span><button type="button" onClick={() => setRemovedImageIds((current) => [...current, image.id])} aria-label={`删除 ${image.original_name}`}>×</button></footer>
-            </article>)}
+            </article>; })}
             {pendingImages.map((image) => <article className="note-image-card pending" key={image.id}>
-              <img src={image.url} alt={image.name} />
+              <button type="button" className="note-image-open" onClick={() => setPreviewNoteImage({ src: image.url, name: image.name })} aria-label={`放大查看 ${image.name}`}><img src={image.url} alt={image.name} /></button>
               <footer><span title={image.name}>{image.name}<small>待保存</small></span><button type="button" onClick={() => removePendingImage(image.id)} aria-label={`移除 ${image.name}`}>×</button></footer>
             </article>)}
           </div>}
         </div>
       </div>
       <div className="modal-actions">{value && <button type="button" className="danger" onClick={remove}>删除记录</button>}<span /><button type="button" className="secondary compact" onClick={onClose}>取消</button><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存投递"}</button></div>
+      {previewNoteImage && createPortal(<div className="question-image-preview-backdrop" role="dialog" aria-modal="true" aria-label="备注图片预览" onMouseDown={() => setPreviewNoteImage(null)}><section className="question-image-preview" onMouseDown={(event) => event.stopPropagation()}><header><b title={previewNoteImage.name}>{previewNoteImage.name}</b><button type="button" onClick={() => setPreviewNoteImage(null)} aria-label="关闭图片预览">×</button></header><img src={previewNoteImage.src} alt={previewNoteImage.name} /></section></div>, document.body)}
     </form>
   </Modal>;
 }
@@ -1038,7 +1102,10 @@ function SessionEditor({ value, applications, sessions, initialApplication, onCl
     const used = sessions.filter((s: Session) => s.application_id === applicationId && s.type === "面试").map((s: Session) => s.round);
     return interviewRounds.find((round) => !used.includes(round)) || "终面";
   }
-  const [form, setForm] = useState({ ...emptySession, application_id: initialApplication || "", round: initialApplication ? recommendRound(initialApplication) : emptySession.round, ...(value || {}), questions: value?.questions || [] }); const [saving, setSaving] = useState(false); const [exporting, setExporting] = useState(false);
+  const initialQuestions = (value?.questions || []).map((question: Question) => ({ ...question, id: question.id || crypto.randomUUID(), images: question.images || [] }));
+  const [form, setForm] = useState({ ...emptySession, application_id: initialApplication || "", round: initialApplication ? recommendRound(initialApplication) : emptySession.round, ...(value || {}), questions: initialQuestions }); const [saving, setSaving] = useState(false); const [exporting, setExporting] = useState(false);
+  const [pendingQuestionImages, setPendingQuestionImages] = useState<Record<string, PendingQuestionImage[]>>({});
+  const [previewQuestionImage, setPreviewQuestionImage] = useState<{ src: string; name: string } | null>(null);
   const roundOptionsByType: Record<string, string[]> = { "笔试": examRounds, "面试": interviewRounds, "AI面试": aiInterviewRounds, "测评": assessmentRounds };
   const roundOptions = roundOptionsByType[form.type] || [form.type];
   const roundFieldLabels: Record<string, string> = { "笔试": "笔试类型", "面试": "面试轮次", "AI面试": "AI面试类型", "测评": "测评类型" };
@@ -1049,9 +1116,42 @@ function SessionEditor({ value, applications, sessions, initialApplication, onCl
     return (roundOptionsByType[type] || [type])[0];
   }
   const customRound = !roundOptions.includes(form.round);
+  useEffect(() => {
+    if (form.result !== "待进行") return;
+    const updateCompletedResult = () => {
+      const start = new Date(form.scheduled_at || "").getTime();
+      const duration = Number(form.duration);
+      if (Number.isFinite(start) && duration > 0 && Date.now() >= start + duration * 60_000) {
+        setForm((current: typeof form) => current.result === "待进行" ? { ...current, result: "已完成（待结果）" } : current);
+      }
+    };
+    updateCompletedResult();
+    const timer = window.setInterval(updateCompletedResult, 30_000);
+    return () => window.clearInterval(timer);
+  }, [form.scheduled_at, form.duration, form.result]);
+  useEffect(() => {
+    if (!previewQuestionImage) return;
+    const closePreview = (event: KeyboardEvent) => { if (event.key === "Escape") setPreviewQuestionImage(null); };
+    window.addEventListener("keydown", closePreview);
+    return () => window.removeEventListener("keydown", closePreview);
+  }, [previewQuestionImage]);
   function field(key: string) { return { value: form[key] ?? "", onChange: (e: any) => setForm({ ...form, [key]: e.target.value }) }; }
   function updateQuestion(index: number, key: string, val: any) { const next = [...form.questions]; next[index] = { ...next[index], [key]: val }; setForm({ ...form, questions: next }); }
-  async function submit(e: FormEvent) { e.preventDefault(); setSaving(true); try { const result = await request(value ? `/sessions/${value.id}` : "/sessions", { method: value ? "PATCH" : "POST", body: JSON.stringify(form) }); if (!value && result.id) { notify("记录已创建，可以继续添加附件"); } onSaved(); } catch (err) { alert(err instanceof Error ? err.message : "保存失败"); } finally { setSaving(false); } }
+  function moveQuestionUp(index: number) { if (index <= 0) return; const next = [...form.questions]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; setForm({ ...form, questions: next }); }
+  function addQuestionImages(index: number, files: File[]) {
+    const questionId = form.questions[index]?.id;
+    if (!questionId) return;
+    const images = files.filter((file) => ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type) && file.size <= 10 * 1024 * 1024).map((file) => ({ id: crypto.randomUUID(), file, url: URL.createObjectURL(file) }));
+    if (!images.length) return notify("请选择 10MB 以内的 PNG、JPG、WebP 或 GIF 图片");
+    setPendingQuestionImages((current) => ({ ...current, [questionId]: [...(current[questionId] || []), ...images] }));
+  }
+  function pasteQuestionImages(index: number, event: any) { const files = Array.from(event.clipboardData?.files || []) as File[]; const images = files.filter((file) => file.type.startsWith("image/")); if (!images.length) return; event.preventDefault(); addQuestionImages(index, images); }
+  function removePendingQuestionImage(questionId: string, imageId: string) { setPendingQuestionImages((current) => { const target = (current[questionId] || []).find((image) => image.id === imageId); if (target) URL.revokeObjectURL(target.url); return { ...current, [questionId]: (current[questionId] || []).filter((image) => image.id !== imageId) }; }); }
+  async function removeSavedQuestionImage(index: number, imageId: string) { try { await request(`/question-images/${imageId}`, { method: "DELETE" }); updateQuestion(index, "images", (form.questions[index].images || []).filter((image: QuestionImage) => image.id !== imageId)); notify("题目图片已删除"); } catch (error) { notify(error instanceof Error ? error.message : "删除图片失败"); } }
+  function removeQuestion(index: number) { const questionId = form.questions[index]?.id || ""; (pendingQuestionImages[questionId] || []).forEach((image) => URL.revokeObjectURL(image.url)); setPendingQuestionImages((current) => { const next = { ...current }; delete next[questionId]; return next; }); setForm({ ...form, questions: form.questions.filter((_: Question, position: number) => position !== index) }); }
+  function fileAsBase64(file: File) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1] || ""); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); }); }
+  async function uploadPendingQuestionImages() { let failed = 0; const remaining: Record<string, PendingQuestionImage[]> = {}; for (const [questionId, images] of Object.entries(pendingQuestionImages)) { for (const image of images) { try { await request("/question-images", { method: "POST", body: JSON.stringify({ question_id: questionId, name: image.file.name || "粘贴的图片.png", type: image.file.type, data: await fileAsBase64(image.file) }) }); URL.revokeObjectURL(image.url); } catch { failed += 1; remaining[questionId] = [...(remaining[questionId] || []), image]; } } } setPendingQuestionImages(remaining); return failed; }
+  async function submit(e: FormEvent) { e.preventDefault(); setSaving(true); try { const result = await request(value ? `/sessions/${value.id}` : "/sessions", { method: value ? "PATCH" : "POST", body: JSON.stringify(form) }); const failedImages = await uploadPendingQuestionImages(); if (!value && result.id) notify("记录已创建，可以继续添加附件"); await onSaved(); if (failedImages) alert(`招聘流程已保存，但有 ${failedImages} 张题目图片上传失败，请重新添加。`); } catch (err) { alert(err instanceof Error ? err.message : "保存失败"); } finally { setSaving(false); } }
   async function upload(file?: File) { if (!file || !value) return; if (file.size > 10 * 1024 * 1024) return notify("单个附件不能超过 10MB"); const reader = new FileReader(); reader.onload = async () => { try { const data = String(reader.result).split(",")[1]; await request("/attachments", { method: "POST", body: JSON.stringify({ session_id: value.id, name: file.name, type: file.type, data }) }); await onRefresh(value.id); notify("附件已保存"); } catch (e) { notify(e instanceof Error ? e.message : "上传失败"); } }; reader.readAsDataURL(file); }
   async function removeAttachment(id: string) { await request(`/attachments/${id}`, { method: "DELETE" }); await onRefresh(value.id); notify("附件已删除"); }
   async function remove() { if (!value || !confirm("确定删除这次招聘流程及其题目和附件吗？")) return; await request(`/sessions/${value.id}`, { method: "DELETE" }); onSaved(); }
@@ -1059,6 +1159,9 @@ function SessionEditor({ value, applications, sessions, initialApplication, onCl
     if (!value || exporting) return;
     setExporting(true);
     try {
+      await request(`/sessions/${value.id}`, { method: "PATCH", body: JSON.stringify(form) });
+      const failedImages = await uploadPendingQuestionImages();
+      if (failedImages) throw new Error(`有 ${failedImages} 张图片上传失败，请重试后再导出`);
       const response = await fetch(`${API}/sessions/${value.id}/questions.pdf`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
       if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.error || "导出失败"); }
       const blob = await response.blob();
@@ -1106,11 +1209,13 @@ function SessionEditor({ value, applications, sessions, initialApplication, onCl
         <label>综合评分<select {...field("rating")}><option value="0">未评分</option><option value="1">1 / 5</option><option value="2">2 / 5</option><option value="3">3 / 5</option><option value="4">4 / 5</option><option value="5">5 / 5</option></select></label>
       </div>
     <div className="section-heading"><div><p className="eyebrow">具体内容</p><h3>题目与回答</h3></div>{value && <button type="button" className="secondary compact" disabled={exporting} onClick={exportPdf}>⇩ {exporting ? "导出中…" : "导出 PDF"}</button>}</div>
-    <div className="question-list">{form.questions.length ? form.questions.map((q: Question, i: number) => <article className="question-editor" key={q.id || i}><header><b>问题 {i + 1}</b><button type="button" onClick={() => setForm({ ...form, questions: form.questions.filter((_: any, n: number) => n !== i) })}>移除</button></header><label>问了什么？<textarea rows={2} value={q.content} onChange={(e) => updateQuestion(i, "content", e.target.value)} placeholder="尽量还原题目和追问…" /></label><div><label>我的回答<textarea rows={3} value={q.answer} onChange={(e) => updateQuestion(i, "answer", e.target.value)} /></label><label>参考答案 / 更好的回答<textarea rows={3} value={q.reference_answer} onChange={(e) => updateQuestion(i, "reference_answer", e.target.value)} /></label></div><footer><input value={q.category} onChange={(e) => updateQuestion(i, "category", e.target.value)} placeholder="标签：算法 / 项目 / 八股" /><label><input type="checkbox" checked={Boolean(q.needs_review)} onChange={(e) => updateQuestion(i, "needs_review", e.target.checked ? 1 : 0)} /> 加入待复习</label></footer></article>) : <button type="button" className="question-empty" onClick={() => setForm({ ...form, questions: [{ content: "", answer: "", reference_answer: "", category: "", needs_review: 0 }] })}>＋ 添加第一道题目</button>}</div>
-    {Boolean(form.questions.length) && <div className="question-list-footer"><button type="button" className="secondary compact" onClick={() => setForm({ ...form, questions: [...form.questions, { content: "", answer: "", reference_answer: "", category: "", needs_review: 0 }] })}>＋ 添加下一道题目</button></div>}
+    <div className="question-list">{form.questions.length ? form.questions.map((q: Question, i: number) => <article className="question-editor" key={q.id || i} onPaste={(event) => pasteQuestionImages(i, event)}><header><b>问题 {i + 1}</b><span className="question-editor-actions">{i > 0 && <button type="button" className="question-move-up" onClick={() => moveQuestionUp(i)} aria-label={`将问题 ${i + 1} 上移`}>↑ 上移</button>}<button type="button" className="question-remove" onClick={() => removeQuestion(i)}>移除</button></span></header><label>问了什么？<textarea rows={2} value={q.content} onChange={(e) => updateQuestion(i, "content", e.target.value)} placeholder="尽量还原题目和追问…" /></label><div><label>我的回答<textarea rows={3} value={q.answer} onChange={(e) => updateQuestion(i, "answer", e.target.value)} /></label><label>参考答案 / 更好的回答<textarea rows={3} value={q.reference_answer} onChange={(e) => updateQuestion(i, "reference_answer", e.target.value)} /></label></div><footer><input value={q.category} onChange={(e) => updateQuestion(i, "category", e.target.value)} placeholder="标签：算法 / 项目 / 八股" /><label><input type="checkbox" checked={Boolean(q.needs_review)} onChange={(e) => updateQuestion(i, "needs_review", e.target.checked ? 1 : 0)} /> 加入待复习</label></footer><div className="question-image-area"><div className="question-image-toolbar"><span><b>题目图片</b><small>在本题任意输入框按 Ctrl+V 粘贴截图</small></span><label className="secondary compact file-label">＋ 选择图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { addQuestionImages(i, Array.from(event.target.files || [])); event.target.value = ""; }} /></label></div>{Boolean((q.images || []).length || (pendingQuestionImages[q.id || ""] || []).length) && <div className="question-image-grid">{(q.images || []).map((image: QuestionImage) => { const src = `${API}/question-images/${image.id}`; const name = image.original_name || "题目图片"; return <div className="question-image-card" key={image.id}><button type="button" className="question-image-open" onClick={() => setPreviewQuestionImage({ src, name })} aria-label={`放大查看 ${name}`}><img src={src} alt={name} loading="lazy" /></button><button type="button" className="question-image-delete" onClick={() => removeSavedQuestionImage(i, image.id)} aria-label={`删除 ${name}`}>×</button></div>; })}{(pendingQuestionImages[q.id || ""] || []).map((image) => { const name = image.file.name || "待保存图片"; return <div className="question-image-card pending" key={image.id}><button type="button" className="question-image-open" onClick={() => setPreviewQuestionImage({ src: image.url, name })} aria-label={`放大查看 ${name}`}><img src={image.url} alt={name} /></button><button type="button" className="question-image-delete" onClick={() => removePendingQuestionImage(q.id || "", image.id)} aria-label="移除待保存图片">×</button><small>待保存</small></div>; })}</div>}</div></article>) : <button type="button" className="question-empty" onClick={() => setForm({ ...form, questions: [createQuestion()] })}>＋ 添加第一道题目</button>}</div>
+    {Boolean(form.questions.length) && <div className="question-list-footer"><button type="button" className="secondary compact" onClick={() => setForm({ ...form, questions: [...form.questions, createQuestion()] })}>＋ 添加下一道题目</button></div>}
     <div className="form-grid notes-grid"><label className="full">整体流程与感受<textarea rows={4} {...field("overall_notes")} placeholder="流程体验、题目难度、整体表现…" /></label><label className="full">没答好的地方与下次改进<textarea rows={4} {...field("improvements")} placeholder="需要复习的知识点、表达方式、下一步行动…" /></label></div>
     {value && <section className="attachments"><div className="section-heading"><div><p className="eyebrow">本机附件</p><h3>截图、题目与资料</h3></div><label className="secondary compact file-label">＋ 添加附件<input type="file" onChange={(e) => upload(e.target.files?.[0])} /></label></div>{value.attachments?.length ? <div className="attachment-list">{value.attachments.map((a) => <div key={a.id}><a href={`${API}/attachments/${a.id}`} target="_blank" rel="noreferrer">{a.original_name}<small>{Math.ceil(a.size / 1024)} KB</small></a><button type="button" onClick={() => removeAttachment(a.id)}>删除</button></div>)}</div> : <p className="muted">暂无附件，单个文件最大 10MB。</p>}</section>}
-    <div className="modal-actions">{value && <button type="button" className="danger" onClick={remove}>删除本次流程</button>}<span /><button type="button" className="secondary compact" onClick={onClose}>取消</button><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存招聘流程"}</button></div></form></Modal>;
+    <div className="modal-actions">{value && <button type="button" className="danger" onClick={remove}>删除本次流程</button>}<span /><button type="button" className="secondary compact" onClick={onClose}>取消</button><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存招聘流程"}</button></div>
+    {previewQuestionImage && createPortal(<div className="question-image-preview-backdrop" role="dialog" aria-modal="true" aria-label="题目图片预览" onMouseDown={() => setPreviewQuestionImage(null)}><section className="question-image-preview" onMouseDown={(event) => event.stopPropagation()}><header><b title={previewQuestionImage.name}>{previewQuestionImage.name}</b><button type="button" onClick={() => setPreviewQuestionImage(null)} aria-label="关闭图片预览">×</button></header><img src={previewQuestionImage.src} alt={previewQuestionImage.name} /></section></div>, document.body)}
+    </form></Modal>;
 }
 
 function Modal({ title, subtitle, onClose, wide, children }: any) { return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true"><header><div><p className="eyebrow">秋招手账</p><h2>{title}</h2><span>{subtitle}</span></div><button className="close" onClick={onClose} aria-label="关闭">×</button></header>{children}</section></div>; }

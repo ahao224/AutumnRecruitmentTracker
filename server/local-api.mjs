@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import PDFDocument from "pdfkit";
 import ExcelJS from "exceljs";
+import sharp from "sharp";
 import { createModelClient, normalizeModelConfig } from "./ai/model-client.mjs";
 import { extractResumeText } from "./resume-text.mjs";
 
@@ -98,6 +99,18 @@ db.exec(`
     needs_review INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+  )
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS question_images (
+    id TEXT PRIMARY KEY,
+    question_id TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    stored_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL DEFAULT 'image/png',
+    size INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
   )
 `);
 db.exec(`
@@ -193,6 +206,7 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(stat
 db.exec("CREATE INDEX IF NOT EXISTS idx_applications_deleted_at ON applications(deleted_at)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_application_date ON sessions(application_id, scheduled_at)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_questions_session_order ON questions(session_id, sort_order)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_question_images_question_id ON question_images(question_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_schedule_events_date ON schedule_events(scheduled_at)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_application_note_images_application_id ON application_note_images(application_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_ai_conversations_updated_at ON ai_conversations(updated_at DESC)");
@@ -580,6 +594,7 @@ function permanentlyDeleteApplications(ids) {
   const placeholders = uniqueIds.map(() => "?").join(",");
   const files = [
     ...rows(db.prepare("SELECT t.stored_name FROM attachments t JOIN sessions s ON s.id=t.session_id JOIN applications a ON a.id=s.application_id WHERE a.deleted_at<>'' AND a.id IN (" + placeholders + ")"), ...uniqueIds),
+    ...rows(db.prepare("SELECT qi.stored_name FROM question_images qi JOIN questions q ON q.id=qi.question_id JOIN sessions s ON s.id=q.session_id JOIN applications a ON a.id=s.application_id WHERE a.deleted_at<>'' AND a.id IN (" + placeholders + ")"), ...uniqueIds),
     ...rows(db.prepare("SELECT i.stored_name FROM application_note_images i JOIN applications a ON a.id=i.application_id WHERE a.deleted_at<>'' AND a.id IN (" + placeholders + ")"), ...uniqueIds),
   ];
   db.exec("BEGIN");
@@ -605,8 +620,31 @@ function purgeExpiredTrash() {
   return permanentlyDeleteApplications(expired);
 }
 
+function syncCompletedSessionResults() {
+  const candidates = rows(db.prepare("SELECT id,scheduled_at,duration FROM sessions WHERE result='待进行' AND scheduled_at<>''"));
+  const completed = candidates.filter((session) => {
+    const start = new Date(session.scheduled_at).getTime();
+    const duration = Number(session.duration);
+    return Number.isFinite(start) && duration > 0 && Date.now() >= start + duration * 60_000;
+  });
+  if (!completed.length) return 0;
+  const stamp = now();
+  const update = db.prepare("UPDATE sessions SET result='已完成（待结果）',updated_at=? WHERE id=? AND result='待进行'");
+  let changes = 0;
+  db.exec("BEGIN");
+  try {
+    completed.forEach((session) => { changes += update.run(stamp, session.id).changes; });
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return changes;
+}
+
 function getState() {
   purgeExpiredTrash();
+  syncCompletedSessionResults();
   const applications = rows(db.prepare(`
     SELECT a.*,
       (SELECT COUNT(*) FROM sessions s WHERE s.application_id = a.id) AS session_count,
@@ -639,11 +677,16 @@ function getState() {
   return { applications, sessions, resumes, schedules, trash, trash_retention_days: 30, storage: { root: DATA_ROOT, database: dbPath } };
 }
 function getSession(id) {
+  syncCompletedSessionResults();
   const session = db.prepare("SELECT s.*, a.company, a.role FROM sessions s JOIN applications a ON a.id=s.application_id AND a.deleted_at='' WHERE s.id=?").get(id);
   if (!session) return null;
+  const questions = rows(db.prepare("SELECT * FROM questions WHERE session_id=? ORDER BY sort_order, id"), id).map((question) => ({
+    ...question,
+    images: rows(db.prepare("SELECT id,question_id,original_name,mime_type,size,created_at FROM question_images WHERE question_id=? ORDER BY created_at"), question.id),
+  }));
   return {
     ...session,
-    questions: rows(db.prepare("SELECT * FROM questions WHERE session_id=? ORDER BY sort_order, id"), id),
+    questions,
     attachments: rows(db.prepare("SELECT id, session_id, original_name, mime_type, size, created_at FROM attachments WHERE session_id=? ORDER BY created_at DESC"), id),
   };
 }
@@ -769,7 +812,7 @@ async function buildApplicationsWorkbook(requestedIds = []) {
     for (const column of [1, 6, 7]) row.getCell(column).alignment = { horizontal: "center", vertical: "middle" };
   });
   styleExcelSheet(overview, 8);
-  const statusColors = { "准备投递": "FF8493A8", "已投递": "FF3B82F6", "进入人才库": "FF6366F1", "笔试": "FFF3A72F", "面试": "FF9B6DF4", "OC": "FF06B6D4", "Offer": "FF19B77C", "拒绝": "FFE85D75", "放弃": "FF667085" };
+  const statusColors = { "准备投递": "FF8493A8", "已投递": "FF3B82F6", "进入人才库": "FF6366F1", "笔试": "FFF3A72F", "面试": "FF9B6DF4", "OC": "FF06B6D4", "Offer": "FF19B77C", "拒绝": "FFE85D75", "放弃": "FFA06B45" };
   overviewStatus.forEach((status, index) => {
     const row = overview.getRow(index + 2);
     row.getCell(2).font = { name: "Microsoft YaHei", size: 10, bold: true, color: { argb: "FF1C2A44" } };
@@ -796,7 +839,32 @@ async function buildApplicationsWorkbook(requestedIds = []) {
   for (let rowIndex = 2; rowIndex <= details.rowCount; rowIndex += 1) details.getRow(rowIndex).getCell(1).font = { name: "Microsoft YaHei", size: 10, bold: true, color: { argb: "FF1C2A44" } };
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
-function buildSessionQuestionsPdf(session) {
+async function prepareQuestionPdfImages(question) {
+  if (!clean(question?.id)) return [];
+  const images = rows(db.prepare("SELECT id,original_name,stored_name FROM question_images WHERE question_id=? ORDER BY created_at"), question.id);
+  const prepared = [];
+  for (const image of images) {
+    const source = path.join(ATTACHMENTS_DIR, image.stored_name);
+    if (!existsSync(source)) continue;
+    try {
+      const { data, info } = await sharp(source, { animated: false })
+        .rotate()
+        .flatten({ background: "#ffffff" })
+        .png({ compressionLevel: 8 })
+        .toBuffer({ resolveWithObject: true });
+      if (info.width && info.height) prepared.push({ ...image, data, width: info.width, height: info.height });
+    } catch (error) {
+      console.warn(`PDF skipped unreadable question image ${image.id}:`, error?.message || error);
+    }
+  }
+  return prepared;
+}
+async function buildSessionQuestionsPdf(session) {
+  const questions = await Promise.all((session.questions || []).map(async (question) => ({
+    ...question,
+    pdfImages: await prepareQuestionPdfImages(question),
+  })));
+  session = { ...session, questions };
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: "A4", margins: { top: 56, right: 52, bottom: 58, left: 52 }, bufferPages: true, info: { Title: `${session.company} - ${session.round || session.type}题目复盘`, Author: "秋招手账" } });
     const chunks = [];
@@ -855,6 +923,26 @@ function buildSessionQuestionsPdf(session) {
         doc.moveDown(0.15).fontSize(10.5).fillColor(ink).text(text(question.answer, "未记录"), { lineGap: 4 });
         doc.moveDown(0.5).fontSize(9).fillColor(muted).text("参考答案 / 更好的回答");
         doc.moveDown(0.15).fontSize(10.5).fillColor(ink).text(text(question.reference_answer, "未记录"), { lineGap: 4 });
+        if (question.pdfImages.length) {
+          doc.moveDown(0.55);
+          ensureSpace(42);
+          doc.fontSize(9).fillColor(muted).text(`题目图片（${question.pdfImages.length} 张）`);
+          doc.moveDown(0.3);
+          for (const image of question.pdfImages) {
+            const maxHeight = doc.page.height - doc.page.margins.top - doc.page.margins.bottom - 28;
+            const scale = Math.min(1, pageWidth / image.width, maxHeight / image.height);
+            const width = image.width * scale;
+            const height = image.height * scale;
+            ensureSpace(height + 24);
+            const imageX = doc.page.margins.left + (pageWidth - width) / 2;
+            const imageY = doc.y;
+            doc.save().roundedRect(imageX - 1, imageY - 1, width + 2, height + 2, 4).strokeColor("#dbe5f1").lineWidth(1).stroke().restore();
+            doc.image(image.data, imageX, imageY, { width, height });
+            doc.y = imageY + height + 6;
+            doc.fontSize(7.5).fillColor("#94a3b8").text(clean(image.original_name, "题目图片"), imageX, doc.y, { width, ellipsis: true });
+            doc.moveDown(0.45);
+          }
+        }
         doc.moveDown(0.8).strokeColor("#e2e8f0").moveTo(doc.page.margins.left, doc.y).lineTo(doc.page.width - doc.page.margins.right, doc.y).stroke();
         doc.moveDown(0.65);
       });
@@ -885,9 +973,28 @@ function buildSessionQuestionsPdf(session) {
   });
 }
 function saveQuestions(sessionId, questions = []) {
-  db.prepare("DELETE FROM questions WHERE session_id=?").run(sessionId);
+  const existing = rows(db.prepare("SELECT id FROM questions WHERE session_id=?"), sessionId).map((item) => item.id);
+  const keep = [];
+  const findQuestion = db.prepare("SELECT session_id FROM questions WHERE id=?");
   const insert = db.prepare("INSERT INTO questions (id,session_id,content,answer,reference_answer,category,needs_review,sort_order) VALUES (?,?,?,?,?,?,?,?)");
-  questions.forEach((q, index) => insert.run(q.id || randomUUID(), sessionId, clean(q.content), clean(q.answer), clean(q.reference_answer), clean(q.category), q.needs_review ? 1 : 0, index));
+  const update = db.prepare("UPDATE questions SET content=?,answer=?,reference_answer=?,category=?,needs_review=?,sort_order=? WHERE id=? AND session_id=?");
+  questions.forEach((q, index) => {
+    let id = clean(q.id) || randomUUID();
+    const saved = findQuestion.get(id);
+    if (saved && saved.session_id !== sessionId) id = randomUUID();
+    const values = [clean(q.content), clean(q.answer), clean(q.reference_answer), clean(q.category), q.needs_review ? 1 : 0, index];
+    if (saved && saved.session_id === sessionId) update.run(...values, id, sessionId);
+    else insert.run(id, sessionId, ...values);
+    keep.push(id);
+  });
+  const removed = existing.filter((id) => !keep.includes(id));
+  if (removed.length) {
+    const placeholders = removed.map(() => "?").join(",");
+    const files = rows(db.prepare("SELECT stored_name FROM question_images WHERE question_id IN (" + placeholders + ")"), ...removed);
+    db.prepare("DELETE FROM questions WHERE id IN (" + placeholders + ")").run(...removed);
+    files.forEach((file) => { const target = path.join(ATTACHMENTS_DIR, file.stored_name); if (existsSync(target)) unlinkSync(target); });
+  }
+  return keep;
 }
 function safeAttachmentName(name) {
   const base = path.basename(name).replace(/[^\p{L}\p{N}._-]+/gu, "_").slice(0, 100);
@@ -1235,10 +1342,54 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
     if (sessionMatch && req.method === "DELETE") {
-      const files = rows(db.prepare("SELECT stored_name FROM attachments WHERE session_id=?"), sessionMatch[1]);
+      const files = [
+        ...rows(db.prepare("SELECT stored_name FROM attachments WHERE session_id=?"), sessionMatch[1]),
+        ...rows(db.prepare("SELECT qi.stored_name FROM question_images qi JOIN questions q ON q.id=qi.question_id WHERE q.session_id=?"), sessionMatch[1]),
+      ];
       const result = db.prepare("DELETE FROM sessions WHERE id=?").run(sessionMatch[1]);
       files.forEach((file) => { const target = path.join(ATTACHMENTS_DIR, file.stored_name); if (existsSync(target)) unlinkSync(target); });
       return json(res, result.changes ? 200 : 404, { ok: Boolean(result.changes) });
+    }
+
+    if (req.method === "POST" && pathname === "/api/question-images") {
+      const body = await readJson(req);
+      if (!body.question_id || !body.name || !body.data) return json(res, 400, { error: "题目图片信息不完整" });
+      const question = db.prepare("SELECT q.id FROM questions q JOIN sessions s ON s.id=q.session_id JOIN applications a ON a.id=s.application_id AND a.deleted_at='' WHERE q.id=?").get(body.question_id);
+      if (!question) return json(res, 404, { error: "题目不存在，请先保存招聘流程" });
+      const mimeType = clean(body.type).toLowerCase();
+      if (!new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]).has(mimeType)) return json(res, 400, { error: "仅支持 PNG、JPG、WebP 或 GIF 图片" });
+      const buffer = Buffer.from(body.data, "base64");
+      if (!buffer.length) return json(res, 400, { error: "图片内容为空" });
+      if (buffer.length > 10 * 1024 * 1024) return json(res, 400, { error: "单张图片不能超过 10MB" });
+      const id = randomUUID();
+      const storedName = `${id}-${safeAttachmentName(body.name)}`;
+      const filePath = path.join(ATTACHMENTS_DIR, storedName);
+      writeFileSync(filePath, buffer, { flag: "wx" });
+      try {
+        db.prepare("INSERT INTO question_images (id,question_id,original_name,stored_name,mime_type,size,created_at) VALUES (?,?,?,?,?,?,?)")
+          .run(id, body.question_id, path.basename(body.name), storedName, mimeType, buffer.length, now());
+      } catch (error) {
+        if (existsSync(filePath)) unlinkSync(filePath);
+        throw error;
+      }
+      return json(res, 201, { id });
+    }
+    const questionImageMatch = pathname.match(/^\/api\/question-images\/([^/]+)$/);
+    if (questionImageMatch && req.method === "GET") {
+      const item = db.prepare("SELECT * FROM question_images WHERE id=?").get(questionImageMatch[1]);
+      if (!item) return json(res, 404, { error: "题目图片不存在" });
+      const filePath = path.join(ATTACHMENTS_DIR, item.stored_name);
+      if (!existsSync(filePath)) return json(res, 404, { error: "题目图片文件不存在" });
+      res.writeHead(200, { "Content-Type": item.mime_type, "Content-Length": item.size, "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(item.original_name)}`, "Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff" });
+      return res.end(readFileSync(filePath));
+    }
+    if (questionImageMatch && req.method === "DELETE") {
+      const item = db.prepare("SELECT * FROM question_images WHERE id=?").get(questionImageMatch[1]);
+      if (!item) return json(res, 404, { error: "题目图片不存在" });
+      db.prepare("DELETE FROM question_images WHERE id=?").run(item.id);
+      const filePath = path.join(ATTACHMENTS_DIR, item.stored_name);
+      if (existsSync(filePath)) unlinkSync(filePath);
+      return json(res, 200, { ok: true });
     }
 
     if (req.method === "POST" && pathname === "/api/application-note-images") {
