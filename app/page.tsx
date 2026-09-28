@@ -106,6 +106,13 @@ function sessionEndTimestamp(session: Session) {
   if (!Number.isFinite(start)) return 0;
   return start + Math.max(0, Number(session.duration) || 0) * 60_000;
 }
+function automaticSessionResult(result: string, scheduledAt: string, duration: string | number, currentTime = Date.now()) {
+  if (!["待进行", "已完成（待结果）"].includes(result)) return result;
+  const start = new Date(scheduledAt || "").getTime();
+  const minutes = Number(duration);
+  if (!Number.isFinite(start) || minutes <= 0) return result;
+  return currentTime >= start + minutes * 60_000 ? "已完成（待结果）" : "待进行";
+}
 function sessionDisplayResult(session: Session, now: number) {
   const end = sessionEndTimestamp(session);
   if (session.result === "待进行" && end > 0 && end <= now) return "已完成（待结果）";
@@ -1117,16 +1124,15 @@ function SessionEditor({ value, applications, sessions, initialApplication, onCl
   }
   const customRound = !roundOptions.includes(form.round);
   useEffect(() => {
-    if (form.result !== "待进行") return;
-    const updateCompletedResult = () => {
-      const start = new Date(form.scheduled_at || "").getTime();
-      const duration = Number(form.duration);
-      if (Number.isFinite(start) && duration > 0 && Date.now() >= start + duration * 60_000) {
-        setForm((current: typeof form) => current.result === "待进行" ? { ...current, result: "已完成（待结果）" } : current);
-      }
+    if (!["待进行", "已完成（待结果）"].includes(form.result)) return;
+    const syncTimedResult = () => {
+      setForm((current: typeof form) => {
+        const result = automaticSessionResult(current.result, current.scheduled_at, current.duration);
+        return result === current.result ? current : { ...current, result };
+      });
     };
-    updateCompletedResult();
-    const timer = window.setInterval(updateCompletedResult, 30_000);
+    syncTimedResult();
+    const timer = window.setInterval(syncTimedResult, 30_000);
     return () => window.clearInterval(timer);
   }, [form.scheduled_at, form.duration, form.result]);
   useEffect(() => {

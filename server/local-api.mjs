@@ -620,20 +620,28 @@ function purgeExpiredTrash() {
   return permanentlyDeleteApplications(expired);
 }
 
+function automaticSessionResult(result, scheduledAt, duration, currentTime = Date.now()) {
+  const current = clean(result, "待进行");
+  if (!["待进行", "已完成（待结果）"].includes(current)) return current;
+  const start = new Date(scheduledAt || "").getTime();
+  const minutes = Number(duration);
+  if (!Number.isFinite(start) || minutes <= 0) return current;
+  return currentTime >= start + minutes * 60_000 ? "已完成（待结果）" : "待进行";
+}
+
 function syncCompletedSessionResults() {
-  const candidates = rows(db.prepare("SELECT id,scheduled_at,duration FROM sessions WHERE result='待进行' AND scheduled_at<>''"));
-  const completed = candidates.filter((session) => {
-    const start = new Date(session.scheduled_at).getTime();
-    const duration = Number(session.duration);
-    return Number.isFinite(start) && duration > 0 && Date.now() >= start + duration * 60_000;
-  });
-  if (!completed.length) return 0;
+  const candidates = rows(db.prepare("SELECT id,scheduled_at,duration,result FROM sessions WHERE result IN ('待进行','已完成（待结果）') AND scheduled_at<>''"));
+  const pendingChanges = candidates.map((session) => ({
+    ...session,
+    nextResult: automaticSessionResult(session.result, session.scheduled_at, session.duration),
+  })).filter((session) => session.nextResult !== session.result);
+  if (!pendingChanges.length) return 0;
   const stamp = now();
-  const update = db.prepare("UPDATE sessions SET result='已完成（待结果）',updated_at=? WHERE id=? AND result='待进行'");
+  const update = db.prepare("UPDATE sessions SET result=?,updated_at=? WHERE id=? AND result=?");
   let changes = 0;
   db.exec("BEGIN");
   try {
-    completed.forEach((session) => { changes += update.run(stamp, session.id).changes; });
+    pendingChanges.forEach((session) => { changes += update.run(session.nextResult, stamp, session.id, session.result).changes; });
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -641,7 +649,6 @@ function syncCompletedSessionResults() {
   }
   return changes;
 }
-
 function getState() {
   purgeExpiredTrash();
   syncCompletedSessionResults();
@@ -1289,6 +1296,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && pathname === "/api/sessions") {
       const body = await readJson(req);
       if (!clean(body.application_id)) return json(res, 400, { error: "请选择对应岗位" });
+      body.result = automaticSessionResult(body.result, body.scheduled_at, body.duration);
       const id = randomUUID();
       const stamp = now();
       db.exec("BEGIN");
@@ -1329,6 +1337,12 @@ const server = http.createServer(async (req, res) => {
     }
     if (sessionMatch && req.method === "PATCH") {
       const body = await readJson(req);
+      const currentSession = db.prepare("SELECT * FROM sessions WHERE id=?").get(sessionMatch[1]);
+      if (!currentSession) return json(res, 404, { error: "记录不存在" });
+      const result = Object.hasOwn(body, "result") ? body.result : currentSession.result;
+      const scheduledAt = Object.hasOwn(body, "scheduled_at") ? body.scheduled_at : currentSession.scheduled_at;
+      const duration = Object.hasOwn(body, "duration") ? body.duration : currentSession.duration;
+      body.result = automaticSessionResult(result, scheduledAt, duration);
       const sets = sessionColumns.filter((key) => Object.hasOwn(body, key));
       db.exec("BEGIN");
       try {
