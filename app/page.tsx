@@ -4,6 +4,9 @@
 import { FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./process-fixes.css";
+import "./workspace-theme.css";
+import "./midnight-workspace.css";
+import "./workspace-modules.css";
 
 const API = "http://localhost:4311/api";
 const statuses = ["准备投递", "已投递", "进入人才库", "笔试", "面试", "OC", "Offer", "拒绝", "放弃"];
@@ -19,6 +22,26 @@ const navItems = [
   ["overview", "⌂", "总览"], ["board", "▦", "投递总览"], ["applications", "▤", "投递管理"], ["sessions", "✎", "招聘流程"],
   ["calendar", "□", "日程"], ["insights", "↗", "数据复盘"], ["ai", "✦", "AI 助手"], ["resumes", "◈", "我的简历"], ["trash", "♲", "回收站"], ["data", "◇", "数据与备份"],
 ] as const;
+
+function WorkspaceIcon({ name }: { name: string }) {
+  const paths: Record<string, string> = {
+    overview: "M3 10 12 3l9 7M5 9v12h5v-7h4v7h5V9",
+    board: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
+    applications: "M4 4h16v16H4zM4 9h16M9 9v11",
+    sessions: "M8 3h8v4H8zM8 5H5v16h14V5h-3M8 12h8M8 16h5",
+    calendar: "M4 5h16v16H4zM8 3v4M16 3v4M4 10h16M8 14h2M14 14h2",
+    insights: "M4 3v18h17M8 15l4-5 4 3 5-7",
+    ai: "M12 3v3M12 18v3M3 12h3M18 12h3M12 7l2 3 3 2-3 2-2 3-2-3-3-2 3-2z",
+    resumes: "M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h6",
+    trash: "M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7",
+    data: "M4 5c0-3 16-3 16 0s-16 3-16 0m0 0v7c0 3 16 3 16 0V5M4 12v7c0 3 16 3 16 0v-7",
+  };
+  return <svg className="workspace-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name] || paths.overview} /></svg>;
+}
+
+function WorkspaceMark() {
+  return <svg width="28" height="28" viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">{Array.from({ length: 12 }, (_, i) => <path key={i} d="M16 3c0 6 5 6 5 10" transform={`rotate(${i * 30} 16 16)`} />)}</svg>;
+}
 
 type Application = Record<string, string | number> & { id: string; company: string; role: string; status: string; rejection_stage: string; priority: string };
 type Session = Record<string, string | number> & { id: string; application_id: string; company: string; role: string; type: string; round: string; scheduled_at: string; result: string };
@@ -189,7 +212,10 @@ function DatePickerField({ value, onChange }: { value: string; onChange: (value:
 
 export default function Home() {
   const [view, setView] = useState("overview");
-  const [theme, setTheme] = useState<"dark" | "light">("light");
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [commandQuery, setCommandQuery] = useState("");
+  const [aiLaunchDraft, setAiLaunchDraft] = useState("");
+  const commandSearchRef = useRef<HTMLInputElement>(null);
   const [applications, setApplications] = useState<Application[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [resumes, setResumes] = useState<Resume[]>([]);
@@ -205,7 +231,7 @@ export default function Home() {
   const [prefillApp, setPrefillApp] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("全部");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [checkingLinks, setCheckingLinks] = useState(false);
   const [linkCheckResults, setLinkCheckResults] = useState<LinkCheckResult[] | null>(null);
   const [clock, setClock] = useState(() => Date.now());
@@ -221,11 +247,24 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
+    const migrated = window.localStorage.getItem("autumn-midnight-layout") === "v1";
     const saved = window.localStorage.getItem("autumn-theme");
-    const initial = saved === "dark" ? "dark" : "light";
+    const initial = migrated && saved === "light" ? "light" : "dark";
     setTheme(initial); document.documentElement.dataset.theme = initial;
+    setSidebarCollapsed(migrated ? window.localStorage.getItem("autumn-sidebar-collapsed") !== "false" : true);
+    if (!migrated) {
+      window.localStorage.setItem("autumn-theme", "dark");
+      window.localStorage.setItem("autumn-sidebar-collapsed", "true");
+      window.localStorage.setItem("autumn-midnight-layout", "v1");
+    }
   }, []);
-  useEffect(() => { setSidebarCollapsed(window.localStorage.getItem("autumn-sidebar-collapsed") === "true"); }, []);
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); commandSearchRef.current?.focus(); }
+    };
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
+  }, []);
   function toggleTheme() {
     const next = theme === "dark" ? "light" : "dark";
     setTheme(next); document.documentElement.dataset.theme = next; window.localStorage.setItem("autumn-theme", next);
@@ -311,35 +350,37 @@ export default function Home() {
   }
 
   const viewTitle: Record<string, [string, string]> = {
-    overview: [`${todayGreeting()}，今天继续向前。`, "把每一次投递和复盘，都变成下一次机会的底气。"],
+    overview: [todayGreeting(), "你的投递、机会与下一步安排，都在这里。"],
     board: ["投递总览", "上百家企业，也能一眼看清每一份投递走到了哪里。"],
     applications: ["投递管理", "公司、岗位和进度都在这里。"], sessions: ["招聘流程", "按时间串起笔试与每一轮面试，结束后逐场复盘。"],
     calendar: ["近期日程", "别错过笔试、面试和结果通知。"], insights: ["数据复盘", "看清投递转化，也看见自己的进步。"], ai: ["AI 求职助手", "结合你的岗位、简历与复盘记录继续追问。"], resumes: ["我的简历库", "集中管理不同方向与版本的简历。"], trash: ["回收站", "删除的投递会保留30天，期间可以完整恢复。"], data: ["数据与备份", "所有核心数据仅保存在你的电脑。"],
   };
 
   return (
-    <main className={`shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <main data-view={view} className={`shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
-        <div className="sidebar-head"><button className="brand" onClick={() => setView("overview")} title="返回总览"><span>秋</span><div><strong>秋招手账</strong><small>CAREER OS</small></div></button><button className="sidebar-toggle" onClick={toggleSidebar} aria-expanded={!sidebarCollapsed} aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"} title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}><i>{sidebarCollapsed ? "»" : "«"}</i><span>{sidebarCollapsed ? "展开" : "收起"}</span></button></div>
-        <nav aria-label="主导航">{navItems.map(([id, icon, label]) => <button key={id} title={sidebarCollapsed ? label : undefined} className={view === id ? "active" : ""} onClick={() => setView(id)}><i>{icon}</i><span>{label}</span></button>)}</nav>
+        <div className="sidebar-head"><button className="brand" onClick={() => setView("overview")} title="返回总览"><span><WorkspaceMark /></span><div><strong>秋招手账</strong><small>CAREER OS</small></div></button></div>
+        <nav aria-label="主导航">{navItems.map(([id, , label]) => <button key={id} title={label} aria-current={view === id ? "page" : undefined} className={view === id ? "active" : ""} onClick={() => setView(id)}><i><WorkspaceIcon name={id} /></i><span>{label}</span></button>)}</nav>
+        <div className="rail-footer"><button className="sidebar-toggle" onClick={toggleSidebar} aria-expanded={!sidebarCollapsed} aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"} title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}><WorkspaceIcon name="applications" /><span>{sidebarCollapsed ? "展开" : "收起"}</span></button><span className={`rail-local-dot ${error ? "offline" : ""}`} title={error ? "数据服务未连接" : "本地数据已连接"} /></div>
         <div className="storage-note"><small><i className={error ? "dot bad" : "dot"} />本地安全存储</small><b>{storage.root}</b><span>{error ? "数据服务未连接" : "记录已保存在你的电脑"}</span></div>
       </aside>
 
       <section className="content">
+        <div className="workspace-commandbar"><form onSubmit={(event) => { event.preventDefault(); setSearch(commandQuery.trim()); setStatusFilter("全部"); setView("applications"); }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6" /><path d="m15 15 5 5" /></svg><input ref={commandSearchRef} aria-label="全局搜索" placeholder="搜索公司、岗位或城市…" value={commandQuery} onChange={(event) => setCommandQuery(event.target.value)} /><kbd>Ctrl K</kbd></form><div className="commandbar-account"><span>本地工作空间</span><b title="个人求职工作空间">我</b></div></div>
         <header className="topbar">
-          <div><p className="eyebrow">2026 AUTUMN RECRUITMENT</p><h1>{viewTitle[view][0]}</h1><p className="muted">{viewTitle[view][1]}</p><div className="hero-meta"><span><i />本地在线</span><span>{applications.length} 个求职目标</span><span>{resumes.length} 份简历</span></div></div>
+          <div><p className="eyebrow workspace-breadcrumb">工作空间 <span>/</span> {navItems.find(([id]) => id === view)?.[2]}</p><h1>{viewTitle[view][0]}{view === "overview" && <span className="editorial-title">，秋招进行时。</span>}</h1><p className="muted">{viewTitle[view][1]}</p><div className="hero-meta"><span><i className={error ? "offline" : ""} />{error ? "本地服务未连接" : "本地在线"}</span><span>{applications.length} 个求职目标</span><span>{resumes.length} 份简历</span></div></div>
           <div className="header-actions"><button className="theme-toggle" onClick={toggleTheme} aria-label={`切换到${theme === "dark" ? "浅色" : "深色"}模式`}><span className={theme === "light" ? "active" : ""}>☀</span><span className={theme === "dark" ? "active" : ""}>☾</span><b>{theme === "dark" ? "深色" : "浅色"}</b></button><button className="secondary compact" onClick={() => newSession()}>＋ 招聘流程</button><button className="primary" onClick={() => setAppEditor("new")}>＋ 新增投递</button></div>
         </header>
 
         {error && <div className="alert"><b>暂时无法读取本地数据</b><span>{error}。请关闭当前页面，然后从桌面重新打开“秋招手账”。</span><button onClick={load}>重新连接</button></div>}
         {loading ? <div className="loading">正在打开你的秋招手账…</div> : <>
-          {view === "overview" && <Overview applications={applications} sessions={sessions} upcoming={upcoming} onAddApp={() => setAppEditor("new")} onAddSession={newSession} onAddSchedule={() => setScheduleEditor("new")} onOpenSession={openSession} onOpenSchedule={setScheduleEditor} onView={setView} />}
+          {view === "overview" && <Overview applications={applications} sessions={sessions} resumes={resumes} upcoming={upcoming} onAddApp={() => setAppEditor("new")} onAddSchedule={() => setScheduleEditor("new")} onOpenSession={openSession} onOpenSchedule={setScheduleEditor} onView={setView} onAskAi={(draft: string) => { setAiLaunchDraft(draft); setView("ai"); }} />}
           {view === "board" && <ApplicationBoard applications={applications} sessions={sessions} clock={clock} onEdit={setAppEditor} onAdd={() => setAppEditor("new")} onCheckLinks={checkLinks} checkingLinks={checkingLinks} notify={notify} />}
           {view === "applications" && <ApplicationsView applications={filteredApps} sessions={sessions} clock={clock} search={search} setSearch={setSearch} filter={statusFilter} setFilter={setStatusFilter} onEdit={setAppEditor} onDelete={deleteApplication} onStatus={updateStatus} onSession={newSession} onOpenSession={openSession} onDeleteSession={deleteSessionFromList} onCheckLinks={checkLinks} checkingLinks={checkingLinks} />}
           {view === "sessions" && <SessionsView sessions={sessions} clock={clock} onOpen={openSession} onAdd={() => newSession()} />}
           {view === "calendar" && <CalendarView sessions={sessions} schedules={schedules} clock={clock} onOpenSession={openSession} onOpenSchedule={setScheduleEditor} onAdd={() => setScheduleEditor("new")} />}
           {view === "insights" && <InsightsView applications={applications} sessions={sessions} clock={clock} onOpen={openSession} />}
-          {view === "ai" && <AiChatView applications={applications} resumes={resumes} onOpenSettings={() => setView("data")} notify={notify} />}
+          {view === "ai" && <AiChatView applications={applications} resumes={resumes} initialDraft={aiLaunchDraft} onDraftConsumed={() => setAiLaunchDraft("")} onOpenSettings={() => setView("data")} notify={notify} />}
           {view === "resumes" && <ResumeView resumes={resumes} onReload={load} notify={notify} />}
           {view === "trash" && <TrashView applications={trash} onRestore={restoreApplication} onDelete={permanentlyDeleteApplication} onEmpty={emptyTrash} />}
           {view === "data" && <DataView storage={storage} onNotify={notify} onReload={load} />}
@@ -355,30 +396,56 @@ export default function Home() {
   );
 }
 
-function Overview({ applications, sessions, upcoming, onAddApp, onAddSession, onAddSchedule, onOpenSession, onOpenSchedule, onView }: any) {
-  const examSessions = sessions.filter((s: Session) => ["笔试", "测评"].includes(s.type));
-  const interviewSessions = sessions.filter((s: Session) => ["面试", "AI面试"].includes(s.type));
-  const submittedCount = applications.filter((a: Application) => ["已投递", "进入人才库", "笔试", "面试", "OC", "Offer", "拒绝"].includes(a.status)).length;
-  const examCount = examSessions.length + applications.filter((a: Application) => a.status === "笔试" && !examSessions.some((s: Session) => s.application_id === a.id)).length;
-  const interviewCount = interviewSessions.length + applications.filter((a: Application) => a.status === "面试" && !interviewSessions.some((s: Session) => s.application_id === a.id)).length;
-  const cards = [
-    { label: "准备投递", count: applications.filter((a: Application) => a.status === "准备投递").length, caption: "当前待投岗位", target: "applications" },
-    { label: "已投递", count: submittedCount, caption: "累计投递岗位", target: "applications" },
-    { label: "笔试 / 测评", count: examCount, caption: `累计场次 · 当前 ${applications.filter((a: Application) => a.status === "笔试").length} 个岗位`, target: "sessions" },
-    { label: "面试 / AI面试", count: interviewCount, caption: `累计场次 · 当前 ${applications.filter((a: Application) => a.status === "面试").length} 个岗位`, target: "sessions" },
-    { label: "Offer", count: applications.filter((a: Application) => a.status === "Offer").length, caption: "当前获得 Offer", target: "applications" },
+function Overview({ applications, sessions, resumes, upcoming, onAddApp, onAddSchedule, onOpenSession, onOpenSchedule, onView, onAskAi }: any) {
+  const [rangeDays, setRangeDays] = useState(90);
+  const [question, setQuestion] = useState("");
+  const [model, setModel] = useState<AiConfig | null>(null);
+  useEffect(() => { request("/ai/config").then(setModel).catch(() => {}); }, []);
+  const pending = applications.filter((a: Application) => a.status === "准备投递").length;
+  const submittedApplications = applications.filter((a: Application) => ["已投递", "进入人才库", "笔试", "面试", "OC", "Offer", "拒绝"].includes(a.status));
+  const submitted = submittedApplications.length;
+  const interviews = sessions.filter((s: Session) => ["面试", "AI面试"].includes(s.type)).length;
+  const exams = sessions.filter((s: Session) => ["笔试", "测评"].includes(s.type)).length;
+  const questionCount = sessions.reduce((n: number, s: Session) => n + Number(s.question_count || 0), 0);
+  const recordedSessions = sessions.filter((s: Session) => Number(s.question_count || 0) > 0).length;
+  const offers = applications.filter((a: Application) => a.status === "Offer").length;
+  const oc = applications.filter((a: Application) => a.status === "OC").length;
+  const defaultResume = resumes.find((r: Resume) => Boolean(r.is_default));
+  const today = parseDateOnly(todayLocalDate()) || new Date();
+  const start = new Date(today); start.setDate(start.getDate() - rangeDays + 1);
+  const end = new Date(today); end.setDate(end.getDate() + 1);
+  const dates = submittedApplications.map((a: Application) => parseDateOnly(String(a.applied_at || ""))).filter((d: Date | null): d is Date => Boolean(d && d >= start && d < end));
+  const days = Array.from({ length: rangeDays }, (_, index) => { const day = new Date(start); day.setDate(day.getDate() + index); return day; });
+  const dailyCounts = days.map(day => dates.filter((d: Date) => dateOnlyKey(d) === dateOnlyKey(day)).length);
+  const barValues = Array.from({ length: 14 }, (_, index) => dailyCounts.slice(Math.floor(index * rangeDays / 14), Math.floor((index + 1) * rangeDays / 14)).reduce((sum, n) => sum + n, 0));
+  const maxBar = Math.max(1, ...barValues);
+  let cumulative = 0;
+  const trend = dailyCounts.map(count => { cumulative += count; return cumulative; });
+  const points = trend.map((n, index) => `${(index / Math.max(1, trend.length - 1)) * 280},${54 - (n / Math.max(1, dates.length)) * 46}`).join(" ");
+  const suggestions = [
+    { label: "投递建议", prompt: "请结合我的求职目标与简历，分析下一步应优先准备哪些类型的岗位，并列出具体行动。" },
+    { label: "模拟面试", prompt: "请基于我选择的岗位和简历模拟面试，一次问一道题，等我回答后点评并追问。" },
+    { label: "复盘薄弱点", prompt: "请结合我已记录的面试题目与回答，整理主要薄弱点，并给出有优先级的复习计划。" },
   ];
-  const recent = applications.slice(0, 5);
-  return <>
-    <section className="stage-grid">{cards.map((item, i) => <button className={`stat tone-${i}`} key={item.label} onClick={() => onView(item.target)}><p>{item.label}</p><strong>{item.count}</strong><span>{item.caption} →</span></button>)}</section>
-    <section className="dashboard-grid">
-      <article className="panel applications"><div className="panel-title"><div><p className="eyebrow">正在进行</p><h2>最近投递</h2></div><button className="text-button" onClick={() => onView("applications")}>查看全部 →</button></div>
-        {recent.length ? <div className="application-list">{recent.map((a: Application) => <div className="application" key={a.id}><div className="company-mark">{a.company[0]}</div><div className="grow"><b>{a.company}</b><span>{a.role}{a.location ? ` · ${a.location}` : ""}</span></div><span className={`status-chip s-${statuses.indexOf(a.status)}`}>{displayStatus(a)}</span><button className="mini-action" onClick={() => onAddSession(a.id)}>记一场</button></div>)}</div> : <Empty title="还没有投递记录" text="从第一家公司开始，建立你的秋招进度。" action="新增第一条投递" onClick={onAddApp} />}
-      </article>
-      <article className="panel next-up"><p className="eyebrow">接下来</p><h2>近期日程</h2>{upcoming.length ? <div className="timeline">{upcoming.slice(0, 3).map((s: any) => <button key={`${s.source}-${s.id}`} onClick={() => s.source === "session" ? onOpenSession(s) : onOpenSchedule(s)}><time>{new Date(s.scheduled_at).getDate()}<small>{new Date(s.scheduled_at).getMonth() + 1}月</small></time><p><b>{s.agendaTitle}</b><span>{formatDate(s.scheduled_at)} · {s.source === "session" ? s.type : s.event_type}</span></p></button>)}</div> : <Empty compact title="最近没有安排" text="添加截止日期、宣讲会、提醒或招聘流程安排。" action="添加日程" onClick={onAddSchedule} />}</article>
-      <article className="panel reflection"><p className="eyebrow">累计沉淀</p><h2>{sessions.reduce((n: number, s: Session) => n + Number(s.question_count || 0), 0)} 道题目被记录</h2><p>逐题写下你的回答和参考答案，勾选待复习项，让每一次经历都有价值。</p><button className="secondary" onClick={() => onView("sessions")}>查看全部复盘</button></article>
+  return <div className="midnight-dashboard">
+    <div className="dashboard-controls"><span>你的求职动态 <i /> <small>实时本地数据</small></span><label>趋势范围<select aria-label="趋势时间范围" value={rangeDays} onChange={(event) => setRangeDays(Number(event.target.value))}><option value={14}>最近 14 天</option><option value={30}>最近 30 天</option><option value={90}>最近 90 天</option></select></label></div>
+    <section className="widget-grid" aria-label="求职数据看板">
+      <article className="metric-widget summary-widget"><header><span>求职概况</span><small>截至今天</small></header><p>你正在管理 <strong>{applications.length} 个求职目标</strong>，已投递 <strong>{submitted} 个岗位</strong>。还有 <strong>{pending} 个岗位</strong> 等待行动。</p><span className="summary-note">每一个下一步，都值得认真对待。</span><button className="widget-link" onClick={() => onView("applications")}>查看全部投递 <span>↗</span></button></article>
+      <article className="metric-widget"><header><WorkspaceIcon name="insights" /><span>投递节奏</span></header><p>最近 {rangeDays} 天，你完成了 <strong>{dates.length} 份投递</strong>。</p><div className="activity-bars" role="img" aria-label={`最近${rangeDays}天共${dates.length}份投递，按时间分为14组`}>{barValues.map((n, index) => <span key={index} title={`第 ${index + 1} 组：${n} 份`} className={n ? "has-activity" : ""} style={{ height: `${n ? Math.max(12, n / maxBar * 100) : 3}%` }} />)}</div><button className="widget-link" onClick={() => onView("insights")}>查看投递数据 <span>↗</span></button></article>
+      <article className="metric-widget"><header><WorkspaceIcon name="sessions" /><span>面试与测评</span></header><p>累计参加 <strong>{interviews} 场面试</strong>，完成 <strong>{exams} 场笔试 / 测评</strong>。</p><div className="widget-number">{sessions.length}<span>场招聘流程</span></div><button className="widget-link" onClick={() => onView("sessions")}>管理招聘流程 <span>↗</span></button></article>
+      <article className="metric-widget"><header><WorkspaceIcon name="resumes" /><span>简历档案</span></header><p>已保存 <strong>{resumes.length} 份简历</strong>，随时为不同岗位准备合适的版本。</p><div className="resume-file-line"><WorkspaceIcon name="resumes" /><span>{defaultResume?.title || "尚未设置默认简历"}</span></div><button className="widget-link" onClick={() => onView("resumes")}>打开简历库 <span>↗</span></button></article>
+      <article className="metric-widget"><header><WorkspaceIcon name="calendar" /><span>接下来的安排</span></header>{upcoming.length ? <><p>有 <strong>{upcoming.length} 项安排</strong> 即将进行，下一场是：</p><button className="next-agenda" onClick={() => upcoming[0].source === "session" ? onOpenSession(upcoming[0]) : onOpenSchedule(upcoming[0])}><strong>{upcoming[0].agendaTitle}</strong><span>{formatDate(upcoming[0].scheduled_at)}</span></button></> : <><p>近期没有待进行的安排。为下一轮面试，留一点准备时间。</p><div className="widget-number quiet">日程留白<span>也是准备的机会</span></div></>}<button className="widget-link" onClick={upcoming.length ? () => onView("calendar") : onAddSchedule}>{upcoming.length ? "查看完整日程" : "添加一项日程"} <span>＋</span></button></article>
+      <article className="metric-widget"><header><WorkspaceIcon name="applications" /><span>笔面试复盘</span></header><p><strong>{recordedSessions} 场经历</strong> 留下了题目与回答，下一次可以准备得更充分。</p><div className="widget-number">{questionCount}<span>道题目已记录</span></div><button className="widget-link" onClick={() => onView("insights")}>回看我的复盘 <span>↗</span></button></article>
+      <article className="metric-widget"><header><WorkspaceIcon name="board" /><span>机会与进展</span></header><p>把每一次推进，变成可以看见的积累。</p><div className="widget-number">{offers}<span>份 Offer {oc ? `· ${oc} 个 OC` : ""}</span></div><div className="opportunity-stages"><span>准备中 <b>{pending}</b></span><span>笔面试 <b>{applications.filter((a: Application) => ["笔试", "面试"].includes(a.status)).length}</b></span></div><button className="widget-link" onClick={() => onView("board")}>浏览全部机会 <span>↗</span></button></article>
+      <article className="metric-widget"><header><WorkspaceIcon name="insights" /><span>投递积累</span></header><p>最近 {rangeDays} 天，累计向 <strong>{dates.length} 个岗位</strong> 迈出第一步。</p><svg className="trend-line" viewBox="0 0 280 62" role="img" aria-label={`最近${rangeDays}天累计投递${dates.length}个岗位`}><path d="M0 57H280" stroke="currentColor" opacity=".12" /><polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.5" vectorEffect="non-scaling-stroke" /></svg><button className="widget-link" onClick={() => onView("insights")}>查看完整趋势 <span>↗</span></button></article>
     </section>
-  </>;
+    <section className="dashboard-ai" aria-label="AI 求职提问">
+      <div className="dashboard-ai-shortcuts">{suggestions.map(item => <button key={item.label} onClick={() => setQuestion(item.prompt)}><WorkspaceIcon name="ai" />{item.label}</button>)}<button onClick={onAddApp}><WorkspaceIcon name="applications" />新增投递</button></div>
+      <div className="dashboard-suggestions">{suggestions.map((item, index) => <button key={item.label} onClick={() => setQuestion(item.prompt)}><span>我想</span>{["知道接下来优先投递什么岗位", "为下一轮面试做一次模拟", "找出笔面试中反复出现的薄弱点"][index]}<i>↗</i></button>)}</div>
+      <form className="dashboard-composer" onSubmit={(event) => { event.preventDefault(); if (question.trim()) onAskAi(question.trim()); }}><textarea aria-label="向 AI 求职助手提问" placeholder="我想了解…" rows={2} maxLength={6000} value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (question.trim()) onAskAi(question.trim()); } }} /><footer><span><WorkspaceIcon name="ai" />{model?.configured ? model.model : "AI 求职助手"}<i>·</i>在对话中选择岗位与简历</span><button type="submit" disabled={!question.trim()} aria-label="在 AI 助手中继续" title="在 AI 助手中继续">↑</button></footer></form>
+      <p className="dashboard-ai-note">进入对话后确认资料并发送，AI 将结合你的本地记录给出建议。</p>
+    </section>
+  </div>;
 }
 
 function ApplicationBoard({ applications, sessions, clock, onEdit, onAdd, onCheckLinks, checkingLinks, notify }: { applications: Application[]; sessions: Session[]; clock: number; onEdit: (app: Application) => void; onAdd: () => void; onCheckLinks: () => void; checkingLinks: boolean; notify: (message: string) => void }) {
@@ -491,10 +558,11 @@ function ApplicationsView({ applications, sessions, clock, search, setSearch, fi
       return recentlyUpdated(a, b);
     });
   }, [applications, sortBy]);
-  return <section className="workspace-panel">
+  return <section className="workspace-panel management-workspace">
+    <div className="management-heading"><div><h2>全部投递</h2><p>集中管理岗位与每一轮招聘进展</p></div><span className="record-count">{applications.length} 条记录</span></div>
     <div className="toolbar">
-      <label className="search">⌕<input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索公司、岗位或城市" /></label>
-      <select value={filter} onChange={(e) => setFilter(e.target.value)}><option>全部</option>{statuses.map((s) => <option key={s}>{s}</option>)}</select>
+      <label className="search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg><input aria-label="搜索公司、岗位或城市" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索公司、岗位或城市" /></label>
+      <select aria-label="筛选投递状态" value={filter} onChange={(e) => setFilter(e.target.value)}><option>全部</option>{statuses.map((s) => <option key={s}>{s}</option>)}</select>
       <label className="management-sort"><span>排序</span><select value={sortBy} onChange={(e) => setSortBy(e.target.value)}><option>最近更新</option><option>当前进度</option><option>优先级：高到低</option><option>优先级：低到高</option><option>投递日期：最新</option><option>投递日期：最早</option><option>公司名称</option></select></label>
       <button className={`salary-toggle ${showSalary ? "active" : ""}`} onClick={toggleSalary} aria-pressed={showSalary} aria-label={showSalary ? "隐藏薪资" : "显示薪资"}><i>￥</i>{showSalary ? "隐藏薪资" : "显示薪资"}</button>
       <button className="link-check-button" onClick={onCheckLinks} disabled={checkingLinks}>⌁ {checkingLinks ? "检查中…" : "一键检查链接"}</button>
@@ -506,7 +574,7 @@ function ApplicationsView({ applications, sessions, clock, search, setSearch, fi
         return <Fragment key={a.id}>
           <tr>
             <td><div className="company-cell"><i>{a.company[0]}</i><span><b>{a.company}</b><small>{a.role}{a.location ? ` · ${a.location}` : ""}</small></span><button className="flow-toggle" onClick={() => setExpanded(isOpen ? "" : a.id)}>{isOpen ? "收起流程" : `查看流程${items.length ? ` (${items.length})` : ""}`}<em>{isOpen ? "⌃" : "⌄"}</em></button></div></td>
-            <td><span className="stage-pill">{applicationStage(a, items, clock).label}</span></td>
+            <td><span className={`stage-pill s-${statuses.indexOf(a.status)}`}>{applicationStage(a, items, clock).label}</span></td>
             <td>{next ? <button className="next-process" onClick={() => onOpenSession(next)}><b>{next.round || next.type}</b><small>{formatDate(next.scheduled_at)}</small></button> : <span className="no-plan">暂无安排</span>}</td>
             <td><div className="status-control"><select className="status-select" value={a.status} onChange={(e) => onStatus(a, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select>{a.status === "拒绝" && <select className="status-select rejection-stage-select" aria-label="拒绝阶段" value={a.rejection_stage || ""} onChange={(e) => onStatus(a, "拒绝", e.target.value)}><option value="">选择拒绝阶段</option>{rejectionStages.map((stage) => <option key={stage}>{stage}</option>)}</select>}</div></td>
             <td><span className={`priority p-${a.priority}`}>{a.priority}</span></td>
@@ -583,10 +651,12 @@ function TrashView({ applications, onRestore, onDelete, onEmpty }: { application
 }
 
 function SessionsView({ sessions, clock, onOpen, onAdd }: any) {
-  return <section className="session-grid">{sessions.length ? sessions.map((s: Session) => {
+  const questionCount = sessions.reduce((count: number, session: Session) => count + Number(session.question_count || 0), 0);
+  const upcomingCount = sessions.filter((session: Session) => session.result === "待进行" && sessionEndTimestamp(session) > clock).length;
+  return <section className="sessions-workspace"><header className="module-heading"><div><p className="eyebrow">招聘记录</p><h2>全部招聘流程</h2><p>时间、进展与复盘，按场次完整保留。</p></div><button className="secondary compact" onClick={onAdd}>＋ 记录流程</button></header><div className="module-summary"><span>全部流程 <b>{sessions.length}</b></span><span>待进行 <b>{upcomingCount}</b></span><span>已记录题目 <b>{questionCount}</b></span></div><div className="session-grid">{sessions.length ? sessions.map((s: Session) => {
     const displayResult = s.result === "待进行" && +new Date(s.scheduled_at) <= clock && sessionEndTimestamp(s) > clock ? "进行中" : sessionDisplayResult(s, clock);
     return <button className="session-card" key={s.id} onClick={() => onOpen(s)}><div className="session-card-top"><span className={`kind ${sessionTypeClass(s.type)}`}>{s.type}</span><span className={`result r-${displayResult}`}>{displayResult}</span></div><h3>{s.company} · {s.round || s.type}</h3><p>{s.role}</p><dl><div><dt>时间</dt><dd>{formatDate(s.scheduled_at)}</dd></div><div><dt>题目</dt><dd>{s.question_count || 0} 道</dd></div><div><dt>评分</dt><dd>{Number(s.rating) ? `${s.rating}/5` : "未评分"}</dd></div></dl><span className="open-note">打开详细复盘 →</span></button>;
-  }) : <div className="full-empty"><Empty title="还没有招聘流程记录" text="笔试、面试、AI面试和测评都可以单独记录与复盘。" action="记录第一次招聘流程" onClick={onAdd} /></div>}</section>;
+  }) : <div className="full-empty"><Empty title="还没有招聘流程记录" text="笔试、面试、AI面试和测评都可以单独记录与复盘。" action="记录第一次招聘流程" onClick={onAdd} /></div>}</div></section>;
 }
 
 function CalendarView({ sessions, schedules, clock, onOpenSession, onOpenSchedule, onAdd }: any) {
@@ -655,19 +725,20 @@ function ResumeView({ resumes, onReload, notify }: { resumes: Resume[]; onReload
     notify("默认简历已更新");
   }
   return <section className="resume-workspace">
-    <article className="resume-hero"><div><p className="eyebrow">RESUME VAULT</p><h2>你的简历版本中心</h2><p>针对后端、算法、产品等方向保留不同版本，投递时不再找错文件。</p></div><button className="primary" onClick={() => setShowUpload(!showUpload)}>{showUpload ? "收起上传" : "＋ 上传简历"}</button></article>
+    <article className="resume-hero"><div><p className="eyebrow">简历资料</p><h2>简历版本中心 <span className="module-inline-count">{resumes.length} 份</span></h2><p>按目标方向保留不同版本，默认简历会用于未指定版本的 AI 分析。</p></div><button className="primary" onClick={() => setShowUpload(!showUpload)} aria-expanded={showUpload}>{showUpload ? "收起上传" : "＋ 上传简历"}</button></article>
     {showUpload && <form className="resume-upload" onSubmit={upload}><div className="upload-drop"><span>⇧</span><b>{file ? file.name : "选择 PDF、Word 简历"}</b><small>文件保存在 D:\\222\\resumes，最大 20MB</small><label className="secondary compact file-label">选择文件<input type="file" accept=".pdf,.doc,.docx" onChange={(e) => setFile(e.target.files?.[0] || null)} /></label></div><div className="resume-fields"><label>简历名称 *<input required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="例如：后端开发简历" /></label><label>版本<input value={form.version} onChange={(e) => setForm({ ...form, version: e.target.value })} placeholder="例如：2026秋招-v3" /></label><label>目标方向<input value={form.target_role} onChange={(e) => setForm({ ...form, target_role: e.target.value })} placeholder="Java后端 / 算法 / 产品" /></label><label>备注<textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="这版简历突出哪些经历…" /></label><button className="primary" disabled={busy}>{busy ? "正在保存…" : "保存到简历库"}</button></div></form>}
     <div className="resume-grid">{resumes.length ? resumes.map((r) => <article className={`resume-card ${r.is_default ? "is-default" : ""}`} key={r.id}><div className="file-mark">{r.original_name.toLowerCase().endsWith(".pdf") ? "PDF" : "DOC"}</div><div className="resume-card-head"><span className={r.is_default ? "resume-default-badge" : ""}>{r.is_default ? "默认简历" : (r.version || "未标版本")}</span><button onClick={() => remove(r.id)}>×</button></div><h3>{r.title}</h3><p>{r.target_role || "通用方向"}</p><small>{r.notes || r.original_name}</small><time className="resume-uploaded" dateTime={r.created_at}>上传于 {formatDate(r.created_at)}</time><footer><span>{Math.max(1, Math.ceil(r.size / 1024))} KB</span><div className="resume-footer-actions">{!r.is_default && <button type="button" onClick={() => setDefault(r.id)}>设为默认</button>}<a href={`${API}/resumes/${r.id}`} target="_blank" rel="noreferrer">打开简历 ↗</a></div></footer></article>) : <div className="resume-empty"><span>◈</span><h3>简历库还是空的</h3><p>上传你的第一份简历，让投递资料和秋招进度待在一起。</p><button className="secondary compact" onClick={() => setShowUpload(true)}>上传第一份简历</button></div>}</div>
   </section>;
 }
 
-function AiChatView({ applications, resumes, onOpenSettings, notify }: { applications: Application[]; resumes: Resume[]; onOpenSettings: () => void; notify: (message: string) => void }) {
+function AiChatView({ applications, resumes, onOpenSettings, notify, initialDraft = "", onDraftConsumed }: { applications: Application[]; resumes: Resume[]; onOpenSettings: () => void; notify: (message: string) => void; initialDraft?: string; onDraftConsumed?: () => void }) {
+  const launchRequest = useRef({ initialDraft, onDraftConsumed });
   const [conversations, setConversations] = useState<AiConversation[]>([]);
   const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<AiMessage[]>([]);
   const [applicationId, setApplicationId] = useState("");
   const [resumeId, setResumeId] = useState("");
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(initialDraft);
   const [busy, setBusy] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [error, setError] = useState("");
@@ -688,9 +759,10 @@ function AiChatView({ applications, resumes, onOpenSettings, notify }: { applica
       const items = history.conversations || [];
       setConversations(items);
       setAiConfig(config);
-      if (items[0]) selectConversation(items[0].id);
+      if (items[0] && !launchRequest.current.initialDraft) selectConversation(items[0].id);
     }).catch((reason) => setError(reason instanceof Error ? reason.message : "AI 助手加载失败"));
   }, []);
+  useEffect(() => { if (launchRequest.current.initialDraft) launchRequest.current.onDraftConsumed?.(); }, []);
   useEffect(() => {
     setHistoryCollapsed(window.localStorage.getItem("autumn-ai-history-collapsed") === "true");
     try {
@@ -888,7 +960,7 @@ function DataView({ storage, onNotify, onReload }: any) {
     <article className="panel data-card"><span className="data-icon">⇩</span><div><h2>创建数据库备份</h2><p>生成一份带日期的完整数据库副本，保存至 <code>D:\222\backups</code>。</p><button className="primary" disabled={busy} onClick={backup}>{busy ? "正在备份…" : "立即备份"}</button></div></article>
     <article className="panel data-card"><span className="data-icon">↗</span><div><h2>导出或导入</h2><p>JSON 导出适合迁移和长期归档；导入会与现有记录合并。</p><div className="inline-actions"><a className="secondary compact" href={`${API}/export`} download>导出 JSON</a><label className="secondary compact file-label">导入 JSON<input type="file" accept="application/json" onChange={(e) => importFile(e.target.files?.[0])} /></label></div></div></article>
     <article className="panel ai-settings-card">
-      <div className="ai-settings-head"><div><p className="eyebrow">AI MODEL GATEWAY</p><h2>AI 模型接口</h2><p>后续的 JD 解析、简历匹配和面试复盘都会共用这套配置。</p></div><span className={`ai-config-status ${aiConfig.configured ? "ready" : ""}`}><i />{aiConfig.configured ? "已配置" : "未配置"}</span></div>
+      <div className="ai-settings-head"><div><p className="eyebrow">模型服务</p><h2>AI 模型接口</h2><p>JD 解析、简历匹配和面试复盘共用这套配置。</p></div><span className={`ai-config-status ${aiConfig.configured ? "ready" : ""}`}><i />{aiConfig.configured ? "已配置" : "未配置"}</span></div>
       <div className="ai-settings-grid">
         <label>提供商<select value={aiConfig.provider} onChange={(event) => changeProvider(event.target.value as AiConfig["provider"])}><option value="openai">OpenAI</option><option value="openai-compatible">OpenAI 兼容接口</option></select></label>
         <label>模型名称<input value={aiConfig.model} onChange={(event) => setAiConfig({ ...aiConfig, model: event.target.value })} placeholder={aiConfig.provider === "openai" ? "gpt-5.6-terra" : "填写服务商的模型 ID"} /></label>
@@ -1224,5 +1296,5 @@ function SessionEditor({ value, applications, sessions, initialApplication, onCl
     </form></Modal>;
 }
 
-function Modal({ title, subtitle, onClose, wide, children }: any) { return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true"><header><div><p className="eyebrow">秋招手账</p><h2>{title}</h2><span>{subtitle}</span></div><button className="close" onClick={onClose} aria-label="关闭">×</button></header>{children}</section></div>; }
-function Empty({ title, text, action, onClick, compact }: any) { return <div className={`empty ${compact ? "compact-empty" : ""}`}><i>✦</i><b>{title}</b><p>{text}</p>{action && <button className="secondary compact" onClick={onClick}>{action}</button>}</div>; }
+function Modal({ title, subtitle, onClose, wide, children }: any) { return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}><header><div><p className="eyebrow">秋招手账</p><h2>{title}</h2><span>{subtitle}</span></div><button className="close" onClick={onClose} aria-label="关闭">×</button></header>{children}</section></div>; }
+function Empty({ title, text, action, onClick, compact }: any) { return <div className={`empty ${compact ? "compact-empty" : ""}`}><i><WorkspaceIcon name="board" /></i><b>{title}</b><p>{text}</p>{action && <button className="secondary compact" onClick={onClick}>{action}</button>}</div>; }
