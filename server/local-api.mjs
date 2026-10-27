@@ -10,6 +10,7 @@ import ExcelJS from "exceljs";
 import sharp from "sharp";
 import { createModelClient, normalizeModelConfig } from "./ai/model-client.mjs";
 import { extractResumeText } from "./resume-text.mjs";
+import { normalizePdfText } from "./pdf-text.mjs";
 
 const PORT = Number(process.env.AUTUMN_API_PORT || 4311);
 const DATA_ROOT = process.env.AUTUMN_DATA_DIR || "D:\\222";
@@ -889,7 +890,7 @@ async function buildSessionQuestionsPdf(session) {
     const muted = "#64748b";
     const ink = "#14213d";
     const accent = "#2563eb";
-    const text = (value, fallback = "未填写") => clean(value) || fallback;
+    const text = (value, fallback = "未填写") => normalizePdfText(clean(value) || fallback);
     const ensureSpace = (height = 100) => { if (doc.y + height > doc.page.height - doc.page.margins.bottom) doc.addPage(); };
     const sectionTitle = (title) => {
       ensureSpace(46);
@@ -924,7 +925,7 @@ async function buildSessionQuestionsPdf(session) {
         doc.fontSize(10).fillColor("#ffffff").text(String(index + 1), doc.page.margins.left, questionY + 6, { width: 24, align: "center", lineBreak: false });
         doc.fontSize(11.5).fillColor(ink).text(text(question.content, "题目未填写"), doc.page.margins.left + 34, questionY + 4, { width: pageWidth - 34, lineGap: 3 });
         doc.moveDown(0.45);
-        const tags = [clean(question.category), question.needs_review ? "待复习" : ""].filter(Boolean).join(" · ");
+        const tags = [text(question.category, ""), question.needs_review ? "待复习" : ""].filter(Boolean).join(" · ");
         if (tags) doc.fontSize(8.5).fillColor(accent).text(tags);
         doc.moveDown(0.45).fontSize(9).fillColor(muted).text("我的回答");
         doc.moveDown(0.15).fontSize(10.5).fillColor(ink).text(text(question.answer, "未记录"), { lineGap: 4 });
@@ -946,7 +947,7 @@ async function buildSessionQuestionsPdf(session) {
             doc.save().roundedRect(imageX - 1, imageY - 1, width + 2, height + 2, 4).strokeColor("#dbe5f1").lineWidth(1).stroke().restore();
             doc.image(image.data, imageX, imageY, { width, height });
             doc.y = imageY + height + 6;
-            doc.fontSize(7.5).fillColor("#94a3b8").text(clean(image.original_name, "题目图片"), imageX, doc.y, { width, ellipsis: true });
+            doc.fontSize(7.5).fillColor("#94a3b8").text(text(image.original_name, "题目图片"), imageX, doc.y, { width, ellipsis: true });
             doc.moveDown(0.45);
           }
         }
@@ -959,12 +960,12 @@ async function buildSessionQuestionsPdf(session) {
       sectionTitle("整体复盘");
       if (clean(session.overall_notes)) {
         doc.fontSize(9).fillColor(muted).text("整体流程与感受");
-        doc.moveDown(0.15).fontSize(10.5).fillColor(ink).text(session.overall_notes, { lineGap: 4 });
+        doc.moveDown(0.15).fontSize(10.5).fillColor(ink).text(text(session.overall_notes), { lineGap: 4 });
         doc.moveDown(0.7);
       }
       if (clean(session.improvements)) {
         doc.fontSize(9).fillColor(muted).text("没答好的地方与下次改进");
-        doc.moveDown(0.15).fontSize(10.5).fillColor(ink).text(session.improvements, { lineGap: 4 });
+        doc.moveDown(0.15).fontSize(10.5).fillColor(ink).text(text(session.improvements), { lineGap: 4 });
       }
     }
 
